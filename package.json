@@ -1,0 +1,52 @@
+{
+  "license": "0BSD",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^14.1.0",
+    "@notifee/react-native": "^9.1.8",
+    "@react-native-async-storage/async-storage": "2.1.2",
+    "@react-native-community/datetimepicker": "8.4.1",
+    "@react-navigation/native": "*",
+    "@react-navigation/stack": "*",
+    "axios": "*",
+    "expo": "~53.0.22",
+    "expo-auth-session": "~6.2.1",
+    "expo-av": "~15.1.7",
+    "expo-constants": "~17.1.7",
+    "expo-device": "~7.1.4",
+    "expo-file-system": "~18.1.11",
+    "expo-font": "~13.3.2",
+    "expo-linear-gradient": "~14.1.5",
+    "expo-linking": "~7.1.7",
+    "expo-location": "~18.1.6",
+    "expo-notifications": "~0.31.4",
+    "expo-secure-store": "~14.2.4",
+    "expo-speech": "~13.1.7",
+    "expo-status-bar": "~2.2.3",
+    "expo-task-manager": "~13.1.6",
+    "expo-web-browser": "~14.2.0",
+    "lucide-react": "*",
+    "react": "19.0.0",
+    "react-native": "0.79.5",
+    "react-native-gesture-handler": "~2.24.0",
+    "react-native-paper": "4.9.2",
+    "react-native-safe-area-context": "5.4.0",
+    "react-native-screens": "~4.11.1",
+    "react-native-svg": "15.11.2",
+    "react-native-track-player": "^4.1.2",
+    "react-native-vector-icons": "10.3.0",
+    "expo-dev-client": "~5.2.4"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0"
+  },
+  "private": true,
+  "name": "beela-ai",
+  "version": "1.0.0"
+}
