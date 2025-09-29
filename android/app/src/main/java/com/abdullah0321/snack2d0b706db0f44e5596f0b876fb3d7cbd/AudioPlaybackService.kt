@@ -22,6 +22,9 @@ class AudioPlaybackService : Service() {
         val audioPath = intent?.getStringExtra("audioPath")
         val reminderId = intent?.getStringExtra("reminderId") ?: ""
         if (audioPath.isNullOrEmpty()) {
+            // Brief foreground to satisfy OEM policy, then stop
+            startForegroundService(reminderId)
+            stopForeground(true)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -51,19 +54,41 @@ class AudioPlaybackService : Service() {
     }
 
     private fun startForegroundService(reminderId: String) {
-        val channelId = "tts_playback_channel"
+        // Use stable HIGH-importance channel ID
+        val channelId = "voice_reminders_alarm_v2"
         val channelName = "Voice Reminder Playback"
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW)
+            val ch = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Plays voice reminders in the foreground"
+                enableVibration(true)
+                setShowBadge(false)
+                // Do not force a custom sound URI to avoid OEM permission/URI issues
+            }
             nm.createNotificationChannel(ch)
         }
 
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val contentPi = PendingIntent.getActivity(
+            this,
+            (reminderId.hashCode() shl 2) or 3,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
+        )
+
         val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Playing reminder")
+            .setContentTitle("Beela AI Reminder")
             .setContentText("Your voice reminder is playing")
             .setSmallIcon(android.R.drawable.ic_lock_silent_mode)
             .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVibrate(longArrayOf(0, 300, 200, 300))
+            // Use a regular contentIntent, not full-screen, so UI only opens if user taps
+            .setContentIntent(contentPi)
             .build()
 
         startForeground(1001, notification)

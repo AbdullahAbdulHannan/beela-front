@@ -1,9 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
-import { Alert, Linking, Platform,StatusBar,View, NativeModules } from 'react-native';
+import { Alert, Linking, Platform,StatusBar,View, NativeModules, AppState } from 'react-native';
 import notifee from '@notifee/react-native';
 import * as WebBrowser from 'expo-web-browser';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import Login from './Login';
 import SignUp from './SignUp';
@@ -17,6 +18,9 @@ import CalendarScreen from './CalendarScreen';
 import NotificationSettings from './NotificationSetting';
 import { configureNotifications, initLocationServices, rescheduleAllTimeBasedReminders } from './services/notificationService';
 import Profile from './Profile'
+import FirstTimeLanding from './FirstTimeLanding';
+import { OnboardingProvider } from './components/OnboardingProvider';
+
 // For OAuth with WebBrowser
 WebBrowser.maybeCompleteAuthSession();
 
@@ -77,6 +81,36 @@ export default function App() {
       try { await rescheduleAllTimeBasedReminders(); } catch {}
     })();
 
+    // Reschedule whenever app comes to foreground (ensures cross-device sync)
+    const handleAppState = async (state) => {
+      if (state === 'active') {
+        // Only reschedule if logged in
+        try {
+          const token = await AsyncStorage.getItem('userToken');
+          if (token) {
+            await rescheduleAllTimeBasedReminders();
+          }
+        } catch {}
+      }
+    };
+    const appStateSub = AppState.addEventListener('change', handleAppState);
+
+    // Lightweight periodic reschedule (every 15 minutes) while logged in
+    let intervalId;
+    (async () => {
+      try {
+        const token = await AsyncStorage.getItem('userToken');
+        if (token) {
+          intervalId = setInterval(async () => {
+            try {
+              const t = await AsyncStorage.getItem('userToken');
+              if (t) await rescheduleAllTimeBasedReminders();
+            } catch {}
+          }, 15 * 60 * 1000);
+        }
+      } catch {}
+    })();
+
     // Handle deep linking
     const handleDeepLink = (event) => {
       const url = event?.url || event;
@@ -109,42 +143,45 @@ export default function App() {
       if (subscription) {
         subscription.remove();
       }
+      try { if (appStateSub) appStateSub.remove(); } catch {}
+      if (intervalId) clearInterval(intervalId);
     };
   }, []);
 
   return (
- 
-    <NavigationContainer 
-      ref={navigationRef}
-      linking={linking}
-      
-      onReady={() => {
-        routeNameRef.current = navigationRef.current.getCurrentRoute().name;
-      }}
-      onStateChange={async () => {
-        const previousRouteName = routeNameRef.current;
-        const currentRouteName = navigationRef.current.getCurrentRoute().name;
-        routeNameRef.current = currentRouteName;
-      }}
-    >
-      <Stack.Navigator screenOptions={{
-      headerShown: false,
-      statusBarStyle: 'light',       // white icons/text
-      statusBarColor: '#4668FF',     // Android background
-    }}>
-        <Stack.Screen name="SplashScreen" component={SplashScreen} />
-        <Stack.Screen name="Login" component={Login} />
-        <Stack.Screen name="SignUp" component={SignUp} />
-        <Stack.Screen name="ForgotPassword" component={ForgotPassword} />
-        <Stack.Screen name="Dashboard" component={UserDashboard} />
-        <Stack.Screen name="TasksScreen" component={MeetingsReminder} />
-        <Stack.Screen name="Profile" component={Profile} />
-        <Stack.Screen name="CreateReminder" component={CreateReminder} />
-        <Stack.Screen name="Calendar" component={CalendarScreen} options={{ headerShown: false }} />
-        <Stack.Screen name="Planner" component={PlannerScreen} options={{ headerShown: false }} />
-        <Stack.Screen name="NotificationSettings" component={NotificationSettings} options={{ headerShown: false }} />
-      </Stack.Navigator>
-    </NavigationContainer>
-    
+    <OnboardingProvider navigationRef={navigationRef}>
+      <NavigationContainer 
+        ref={navigationRef}
+        linking={linking}
+        
+        onReady={() => {
+          routeNameRef.current = navigationRef.current.getCurrentRoute().name;
+        }}
+        onStateChange={async () => {
+          const previousRouteName = routeNameRef.current;
+          const currentRouteName = navigationRef.current.getCurrentRoute().name;
+          routeNameRef.current = currentRouteName;
+        }}
+      >
+        <Stack.Navigator screenOptions={{
+        headerShown: false,
+        statusBarStyle: 'light',       // white icons/text
+        statusBarColor: '#4668FF',     // Android background
+      }}>
+          <Stack.Screen name="SplashScreen" component={SplashScreen} />
+          <Stack.Screen name="Login" component={Login} />
+          <Stack.Screen name="SignUp" component={SignUp} />
+          <Stack.Screen name="ForgotPassword" component={ForgotPassword} />
+          <Stack.Screen name="FirstTimeLanding" component={FirstTimeLanding} options={{ headerShown: false }} />
+          <Stack.Screen name="Dashboard" component={UserDashboard} />
+          <Stack.Screen name="TasksScreen" component={MeetingsReminder} />
+          <Stack.Screen name="Profile" component={Profile} />
+          <Stack.Screen name="CreateReminder" component={CreateReminder} />
+          <Stack.Screen name="Calendar" component={CalendarScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="Planner" component={PlannerScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="NotificationSettings" component={NotificationSettings} options={{ headerShown: false }} />
+        </Stack.Navigator>
+      </NavigationContainer>
+    </OnboardingProvider>
   );
 }

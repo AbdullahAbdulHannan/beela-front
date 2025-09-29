@@ -2,17 +2,25 @@ import React, { useEffect } from 'react';
 import { StyleSheet, View, Text, StatusBar, Image } from 'react-native';
 import { Colors } from './constants/colors';
 import { useNavigation } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const SplashScreen = () => {
   const navigation = useNavigation();
 
   useEffect(() => {
-    // Navigate to the 'Login' screen after 2 seconds
-    const timer = setTimeout(() => {
-      navigation.replace('Login');
-    }, 2000);
+    const timer = setTimeout(async () => {
+      try {
+        const token = await AsyncStorage.getItem('userToken');
+        if (token) {
+          navigation.replace('Dashboard');
+        } else {
+          navigation.replace('Login');
+        }
+      } catch {
+        navigation.replace('Login');
+      }
+    }, 1200);
 
-    // Clear the timer on component unmount to prevent memory leaks
     return () => clearTimeout(timer);
   }, [navigation]);
 

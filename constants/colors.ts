@@ -8,6 +8,7 @@ export const Colors = {
 
   // Backgrounds and surfaces
   background: '#FFFFFF',
+  backgroundStatus: '#000',
   surface: '#F7F8FA',
   surfaceAlt: '#F0F2F5',
   badge: '#E9ECEF',

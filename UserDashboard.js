@@ -17,14 +17,19 @@ import {
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
 import { Colors } from './constants/colors';
 import Navbar from './components/Navbar';
+import { useOnboardingTarget } from './components/OnboardingProvider';
 
 const UserDashboard = () => {
   const [activeTab, setActiveTab] = useState('Notifications');
   const [isSyncing, setIsSyncing] = useState(false);
-  const [exactAllowed, setExactAllowed] = useState(true);
   const [batteryIgnored, setBatteryIgnored] = useState(true);
-  const [lockscreenIssue, setLockscreenIssue] = useState(false);
   const navigation = useNavigation();
+
+  // Onboarding targets
+  const headerProfileRef = useOnboardingTarget('header-profile');
+  const featureCreateRef = useOnboardingTarget('feature-create');
+  const featureSyncRef = useOnboardingTarget('feature-sync');
+  const featureMeetingsRef = useOnboardingTarget('feature-meetings');
 
   const features = [
     { id: '1', title: 'Create Reminder', subtitle: 'Add To-Do', icon: 'list-ul' },
@@ -42,37 +47,25 @@ const UserDashboard = () => {
   const refreshPermissions = async () => {
     try {
       if (Platform.OS !== 'android') return;
-      const canExact = await NativeModules?.AlarmScheduler?.canScheduleExactAlarms?.();
       const ignoring = await NativeModules?.AlarmScheduler?.isIgnoringBatteryOptimizations?.();
-      // Coerce to booleans; if undefined/null, treat as false so banner remains until confirmed
-      setExactAllowed(Boolean(canExact));
       setBatteryIgnored(Boolean(ignoring));
     } catch {
-      // On error, keep banner visible
-      setExactAllowed(false);
       setBatteryIgnored(false);
     }
   };
 
   useEffect(() => { refreshPermissions(); }, []);
 
-  const openExactAlarmsSettings = async () => {
-    try {
-      await NativeModules?.AlarmScheduler?.requestScheduleExactAlarms?.();
-      Alert.alert('Permission', 'Enable "Allow exact alarms" for Bela in the system screen, then return and tap Re-check.');
-    } catch {}
-  };
-
   const openBatteryOptSettings = async () => {
     try {
       await NativeModules?.AlarmScheduler?.requestIgnoreBatteryOptimizations?.();
-      Alert.alert('Battery Optimization', 'Allow/Enable for Bela, then return and tap Re-check.');
     } catch {}
   };
 
-  const openOtherPermissions = async () => {
+  // Open OEM Autostart / Background start settings without alerts
+  const openAutostartSettings = async () => {
     try {
-      await NativeModules?.AlarmScheduler?.openOtherPermissions?.();
+      await NativeModules?.AlarmScheduler?.openOemPowerSettings?.();
     } catch {}
   };
 
@@ -82,13 +75,14 @@ const UserDashboard = () => {
 
   const handleMicPress = () => {
     // Handle mic press
-    console.log('Mic pressed');  };
+    console.log('Mic pressed');  
+  };
 
-const navigateToCalendar = () => {
+  const navigateToCalendar = () => {
     navigation.navigate('Calendar');
   };
 
- const handleGoogleCalendarSync = async () => {
+  const handleGoogleCalendarSync = async () => {
     try {
       setIsSyncing(true);
       // Get the auth URL from the backend
@@ -134,15 +128,14 @@ const navigateToCalendar = () => {
     setActiveTab(tabName);
   };
 
-  const showPermBanner = Platform.OS === 'android' && (exactAllowed !== true || batteryIgnored !== true || lockscreenIssue === true);
-
+  const showPermBanner = Platform.OS === 'android' && (batteryIgnored !== true);
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+      <StatusBar barStyle="light-content" backgroundColor={Colors.backgroundStatus} />
       <SafeAreaView style={styles.safeArea}>
         <ScrollView contentContainerStyle={styles.scrollViewContent}>
           <View style={styles.header}>
-            <TouchableOpacity  onPress={() => navigation.navigate('Profile')} >
+            <TouchableOpacity ref={headerProfileRef} collapsable={false} onPress={() => navigation.navigate('Profile')} >
               <Feather name="user" size={24} color={Colors.primary} />
             </TouchableOpacity>
             <TouchableOpacity>
@@ -153,29 +146,17 @@ const navigateToCalendar = () => {
           {showPermBanner && (
             <View style={styles.permBanner}>
               <Text style={styles.permTitle}>Improve notification reliability</Text>
-              {!exactAllowed && (
-                <View style={styles.permRow}>
-                  <Text style={styles.permText}>Enable "Allow exact alarms"</Text>
-                  <TouchableOpacity style={styles.permBtn} onPress={openExactAlarmsSettings}>
-                    <Text style={styles.permBtnText}>Open</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
+              {/* Autostart (Background start) recommendation for strict OEMs */}
+              <View style={styles.permRow}>
+                <Text style={styles.permText}>Enable Autostart / Background start</Text>
+                <TouchableOpacity style={styles.permBtn} onPress={openAutostartSettings}>
+                  <Text style={styles.permBtnText}>Open</Text>
+                </TouchableOpacity>
+              </View>
               {!batteryIgnored && (
                 <View style={styles.permRow}>
                   <Text style={styles.permText}>Disable battery optimizations</Text>
                   <TouchableOpacity style={styles.permBtn} onPress={openBatteryOptSettings}>
-                    <Text style={styles.permBtnText}>Open</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-              <TouchableOpacity onPress={() => setLockscreenIssue(true)} style={{ marginTop: 6 }}>
-                <Text style={[styles.permText, { textDecorationLine: 'underline' }]}>Not getting notifications on lock screen?</Text>
-              </TouchableOpacity>
-              {lockscreenIssue && (
-                <View style={styles.permRow}>
-                  <Text style={styles.permText}>Open OEM "Other permissions" (MIUI/ColorOS)</Text>
-                  <TouchableOpacity style={styles.permBtn} onPress={openOtherPermissions}>
                     <Text style={styles.permBtnText}>Open</Text>
                   </TouchableOpacity>
                 </View>
@@ -185,8 +166,6 @@ const navigateToCalendar = () => {
               </TouchableOpacity>
             </View>
           )}
-
-          {/* Main Features Section */}
           <View style={styles.mainContent}>
             <Text style={styles.sectionTitle}>Main Features</Text>
             {/* Feature Cards Grid */}
@@ -195,6 +174,12 @@ const navigateToCalendar = () => {
                 <TouchableOpacity 
                   key={feature.id} 
                   style={styles.card}
+                  ref={
+                    feature.id === '1' ? featureCreateRef :
+                    feature.id === '2' ? featureSyncRef :
+                    feature.id === '3' ? featureMeetingsRef : undefined
+                  }
+                  collapsable={false}
                   onPress={feature.onPress || (() => {
                     if (feature.id === '1') {
                       navigation.navigate('CreateReminder');
@@ -205,7 +190,7 @@ const navigateToCalendar = () => {
                     }
                   })} 
                   disabled={feature.id === '2' && isSyncing}
-                >
+                  >
                   <View>
                     <FontAwesome5 
                       name={feature.icon} 

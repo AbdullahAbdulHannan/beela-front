@@ -29,13 +29,13 @@ const getRangeBounds = (now, range) => {
   const todayEnd = endOfDay(now);
   if (range === 'Today') return { start: todayStart, end: todayEnd };
   if (range === 'Week') {
-    const day = todayStart.getDay(); // 0 Sun - 6 Sat
-    const weekStart = new Date(todayStart); weekStart.setDate(weekStart.getDate() - day);
-    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6); weekEnd.setHours(23,59,59,999);
+    // From today through the next 6 days (inclusive)
+    const weekStart = new Date(todayStart);
+    const weekEnd = new Date(todayStart); weekEnd.setDate(weekEnd.getDate() + 6); weekEnd.setHours(23,59,59,999);
     return { start: weekStart, end: weekEnd };
   }
-  // Month
-  const monthStart = new Date(todayStart.getFullYear(), todayStart.getMonth(), 1);
+  // Month: from today through end of current month
+  const monthStart = new Date(todayStart);
   const monthEnd = new Date(todayStart.getFullYear(), todayStart.getMonth() + 1, 0);
   monthEnd.setHours(23,59,59,999);
   return { start: monthStart, end: monthEnd };
@@ -112,16 +112,19 @@ export default function PlannerScreen({ navigation }) {
               title: r.title,
               description: r.description,
               startTime: r.startDate,
-              endTime: r.endDate,
+              endTime: r.endDate || r.startDate,
+              isCompleted: !!r.isCompleted,
               status: r.isCompleted ? 'completed' : 'pending',
+              aiSuggested: !!r.aiSuggested,
             })),
             meetings: allRem.filter(r => r.type === 'Meeting').map(r => ({
               id: r._id,
               title: r.title,
               description: r.description,
               startTime: r.startDate,
-              endTime: r.endDate,
+              endTime: r.endDate || r.startDate,
               location: r.location?.name || '',
+              aiSuggested: !!r.aiSuggested,
             })),
           };
         } catch (fallbackErr) {
@@ -259,13 +262,16 @@ export default function PlannerScreen({ navigation }) {
     </View>
   );
 
-  const ItemRow = ({ title, timeText, subtitle, right, onPress }) => (
+  const ItemRow = ({ title, timeText, subtitle, right, onPress, completed, aiSuggested }) => (
     <TouchableOpacity style={styles.itemRow} onPress={onPress} activeOpacity={onPress ? 0.7 : 1}>
       <View style={styles.itemTimeBox}>
         <Text style={styles.itemTime}>{timeText}</Text>
       </View>
       <View style={styles.itemMain}>
-        <Text style={styles.itemTitle} numberOfLines={1}>{title}</Text>
+        <View style={{ flexDirection:'row', alignItems:'center' }}>
+          <Text style={[styles.itemTitle, completed && styles.itemTitleCompleted]} numberOfLines={1}>{title}</Text>
+          {!!aiSuggested && <View style={styles.eventBadge}><Text style={styles.eventBadgeText}>AI Suggested</Text></View>}
+        </View>
         {/* {!!subtitle && <Text style={styles.itemSub} numberOfLines={1}>{subtitle}</Text>} */}
       </View>
       <View style={styles.itemRight}>{right}</View>
@@ -299,8 +305,10 @@ const daysSorted = useCallback(
     if (error) return <ErrorView onRetry={fetchData} message={error} />;
 
     if (isToday) {
-      // Only show today's tasks and checkboxes
-      const list = Object.values(grouped.tasks)[0] || tasks.filter(t => withinRange(t, 'startTime', 'endTime', bounds));
+      // Only show today's pending tasks and checkboxes
+      const todayKey = dateKey(new Date());
+      const allToday = grouped.tasks[todayKey] || tasks.filter(t => withinRange(t, 'startTime', 'endTime', bounds));
+      const list = allToday.filter(t => !(t.status === 'completed' || t.isCompleted));
       if (!list.length) return renderEmpty('Tasks');
       return (
         <View>
@@ -312,10 +320,12 @@ const daysSorted = useCallback(
                 key={id}
                 title={t.title || 'Task'}
                 timeText={formatTimeShort(t.startTime)}
+                completed={checked}
+                aiSuggested={!!t.aiSuggested}
                 right={
                   <View style={styles.actionsRow}>
                     <TouchableOpacity style={[styles.checkBox, checked && styles.checkBoxChecked]} onPress={() => toggleTaskCompletion(t)}>
-                      {checked && <Feather name="check" size={16} color={Colors.btnTextk} />}
+                      {checked && <Feather name="check" size={16} color={Colors.btnText} />}
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => editReminder(t, 'Task')} style={styles.iconBtn}>
                       <Feather name="edit-2" size={18} color={Colors.primary} />
@@ -346,6 +356,8 @@ const daysSorted = useCallback(
                 key={t.id || t._id}
                 title={t.title || 'Task'}
                 timeText={formatTimeShort(t.startTime)}
+                completed={t.status === 'completed' || t.isCompleted}
+                aiSuggested={!!t.aiSuggested}
                 // subtitle={t.description}
                 right={
                   <View style={styles.actionsRow}>
@@ -462,7 +474,7 @@ const renderLocationsTab = () => {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+      <StatusBar barStyle="light-content" backgroundColor={Colors.backgroundStatus} />
       <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
@@ -470,7 +482,9 @@ const renderLocationsTab = () => {
             <Feather name="chevron-left" size={24} color={Colors.primary} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Planner</Text>
-          <View style={{ width: 24 }} />
+          <TouchableOpacity onPress={() => { if (!loading) fetchData(); }} disabled={loading} style={{ opacity: loading ? 0.5 : 1 }}>
+            <Feather name="refresh-ccw" size={20} color={Colors.primary} />
+          </TouchableOpacity>
         </View>
 
         {/* Tabs & Filter */}
@@ -594,6 +608,7 @@ const styles = StyleSheet.create({
   itemTime: { color: Colors.primary, fontWeight: '600' },
   itemMain: { flex: 1, marginLeft: 12 },
   itemTitle: { color: Colors.text, fontSize: 16, fontWeight: '500' },
+  itemTitleCompleted: { textDecorationLine: 'line-through', color: Colors.textSubtle },
   itemSub: { color: Colors.textSubtle, fontSize: 12, marginTop: 2 },
   itemRight: { paddingLeft: 8, flexDirection: 'row', alignItems: 'center' },
 
@@ -604,6 +619,8 @@ const styles = StyleSheet.create({
 
   eventBadge: { backgroundColor: Colors.badge, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   eventBadgeText: { color: Colors.textMuted, fontSize: 12 },
+  aiBadge: { marginLeft: 8, backgroundColor: Colors.badge, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  aiBadgeText: { color: Colors.textMuted, fontSize: 10, fontWeight: '700' },
 
   emptyBox: { alignItems: 'center', justifyContent: 'center', padding: 40, opacity: 0.7 },
   emptyText: { color: Colors.text, marginTop: 8 },

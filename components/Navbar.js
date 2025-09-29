@@ -5,12 +5,19 @@ import Svg, { Path } from 'react-native-svg';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../constants/colors';
+import { useOnboardingTarget } from './OnboardingProvider';
 const { width } = Dimensions.get('window');
 const taskIcon = require('../assets/task_icon.png');
 
 export default function Navbar() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+
+  // Onboarding targets
+  const navPlannerRef = useOnboardingTarget('nav-planner');
+  const navCalendarRef = useOnboardingTarget('nav-calendar');
+  const navNotificationsRef = useOnboardingTarget('nav-notifications');
+  const fabAddRef = useOnboardingTarget('fab-add');
 
   return (
     <View style={[styles.navbarWrapper, { paddingBottom: insets.bottom }]}>
@@ -37,7 +44,7 @@ export default function Navbar() {
   </TouchableOpacity>
 
   {/* Notifications */}
-  <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('NotificationSettings')}>
+  <TouchableOpacity ref={navNotificationsRef} collapsable={false} style={styles.navItem} onPress={() => navigation.navigate('NotificationSettings')}>
     <Feather name="bell" size={24} color={Colors.primary} />
     <Text style={styles.navText}>Notifications</Text>
   </TouchableOpacity>
@@ -46,13 +53,13 @@ export default function Navbar() {
   <View style={styles.fabSpacer} />
 
   {/* Tasks */}
-  <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Planner')}>
+  <TouchableOpacity ref={navPlannerRef} collapsable={false} style={styles.navItem} onPress={() => navigation.navigate('Planner')}>
     <FontAwesome5 name="tasks" size={24} color={Colors.primary} />
     <Text style={styles.navText}>Planner</Text>
   </TouchableOpacity>
 
   {/* Calendar */}
-  <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Calendar')}>
+  <TouchableOpacity ref={navCalendarRef} collapsable={false} style={styles.navItem} onPress={() => navigation.navigate('Calendar')}>
     <AntDesign name="calendar" size={24} color={Colors.primary} />
     <Text style={styles.navText}>Calendar</Text>
   </TouchableOpacity>
@@ -60,7 +67,7 @@ export default function Navbar() {
 
 
       {/* Floating Add Button */}
-      <TouchableOpacity style={styles.fabButton} onPress={() => navigation.navigate('CreateReminder')}>
+      <TouchableOpacity ref={fabAddRef} collapsable={false} style={styles.fabButton} onPress={() => navigation.navigate('CreateReminder')}>
         <AntDesign name="plus" size={32} color={Colors.white} />
       </TouchableOpacity>
     </View>

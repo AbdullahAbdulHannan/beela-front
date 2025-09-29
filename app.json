@@ -45,8 +45,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "a177f071-2ffd-4e89-b4a6-7c03de763f27"
+        "projectId": "5db6ff34-64a5-4e33-8844-3428fc93115f"
       }
-    }
+    },
+    "owner": "abdullah030803"
   }
 }

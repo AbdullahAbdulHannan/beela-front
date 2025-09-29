@@ -345,7 +345,7 @@ const CalendarScreen = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.safeArea}>
     
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+      <StatusBar barStyle="light-content" backgroundColor={Colors.backgroundStatus} />
       <View style={styles.container}>
       <View style={styles.header}>
   <TouchableOpacity onPress={() => navigation.goBack()}>

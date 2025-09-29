@@ -1,5 +1,5 @@
 import * as Notifications from 'expo-notifications';
-import notifee, { AndroidImportance, TimestampTrigger, TriggerType, AndroidColor } from '@notifee/react-native';
+import notifee, { AndroidImportance, TimestampTrigger, TriggerType, AndroidColor, EventType } from '@notifee/react-native';
 import * as Device from 'expo-device';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
@@ -7,7 +7,7 @@ import * as FileSystem from 'expo-file-system';
 import { Audio } from 'expo-av';
 import { Platform, NativeModules } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ensureReminderTTS, getReminders, getCalendarEvents } from './api';
+import { ensureReminderTTS, getReminders, getCalendarEvents, getReminder } from './api';
 
 // Configure how notifications are displayed when the app is foregrounded
 Notifications.setNotificationHandler({
@@ -22,12 +22,24 @@ let listenersRegistered = false;
 const GEOFENCE_TASK = 'voxa_geofence_task';
 let geofenceTaskRegistered = false;
 
-// Storage keys for scheduled notification IDs per reminder
-const SCHEDULED_MAP_KEY = 'scheduledReminderNotificationsMap';
+// Storage keys for scheduled notification IDs per reminder, namespaced by user
+const baseKey = 'scheduledReminderNotificationsMap';
+const keyForUser = (userId) => `${baseKey}:${userId || 'anonymous'}`;
+
+async function getCurrentUserId() {
+  try {
+    const raw = await AsyncStorage.getItem('user');
+    const u = raw ? JSON.parse(raw) : null;
+    return u?._id || u?.id || u?.email || 'anonymous';
+  } catch {
+    return 'anonymous';
+  }
+}
 
 async function getScheduledMap() {
   try {
-    const raw = await AsyncStorage.getItem(SCHEDULED_MAP_KEY);
+    const userId = await getCurrentUserId();
+    const raw = await AsyncStorage.getItem(keyForUser(userId));
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
@@ -36,7 +48,8 @@ async function getScheduledMap() {
 
 async function setScheduledMap(map) {
   try {
-    await AsyncStorage.setItem(SCHEDULED_MAP_KEY, JSON.stringify(map || {}));
+    const userId = await getCurrentUserId();
+    await AsyncStorage.setItem(keyForUser(userId), JSON.stringify(map || {}));
   } catch {}
 }
 
@@ -188,13 +201,10 @@ export const configureNotifications = async () => {
 
   // Register listeners once
   if (!listenersRegistered) {
+    // Expo notifications (geofencing + legacy)
     Notifications.addNotificationReceivedListener(async (notification) => {
       try {
-        const data = notification?.request?.content?.data || {};
-        if (data.type === 'reminder_speech' && data.localAudioPath) {
-          // Play saved audio when app is in foreground
-          await playAudioFile(data.localAudioPath);
-        }
+        // No JS playback on delivery; native service handles audio
       } catch (e) {
         console.warn('Error handling foreground notification', e);
       }
@@ -202,15 +212,33 @@ export const configureNotifications = async () => {
 
     Notifications.addNotificationResponseReceivedListener(async (response) => {
       try {
-        const data = response?.notification?.request?.content?.data || {};
-        if (data.type === 'reminder_speech' && data.localAudioPath) {
-          // When user taps from background/closed, play saved audio
-          await playAudioFile(data.localAudioPath);
-        }
+        // Suppress audio on tap to avoid duplicate playback
       } catch (e) {
         console.warn('Error handling notification response', e);
       }
     });
+
+    // Notifee notifications (primary path)
+    try {
+      notifee.onForegroundEvent(async ({ type, detail }) => {
+        try {
+          // Do not play audio on DELIVERED or PRESS; native handles playback
+        } catch (e) {
+          console.warn('[notifee] fg event error', e?.message);
+        }
+      });
+
+      // Background handler must be registered at the root level; Notifee allows inline registration
+      notifee.onBackgroundEvent(async ({ type, detail }) => {
+        try {
+          // Suppress playback on PRESS/ACTION_PRESS to avoid duplicates
+        } catch (e) {
+          // swallow
+        }
+      });
+    } catch (e) {
+      console.warn('[notifee] listener registration failed', e?.message);
+    }
 
     listenersRegistered = true;
   }
@@ -280,27 +308,30 @@ export const scheduleReminderSpeechNotification = async ({
   reminderId,
   textHash,
   replaceExisting = false,
+  leadMinutes: leadMinutesOverride,
 }) => {
   try {
     if (!startDateISO) return { scheduled: false, reason: 'No start date' };
     console.log('[notify] schedule start', { startDateISO });
     // Read preferred lead minutes
-    let leadMinutes = 5;
-    try {
-      const stored = await AsyncStorage.getItem('notificationLeadMinutes');
-      if (stored) {
-        const parsed = parseInt(stored, 10);
-        if (!isNaN(parsed)) {
-          if (parsed === -1) {
-            const custom = await AsyncStorage.getItem('notificationCustomMinutes');
-            const cParsed = parseInt(custom || '', 10);
-            if (!isNaN(cParsed) && cParsed > 0) leadMinutes = cParsed;
-          } else if (parsed > 0) {
-            leadMinutes = parsed;
+    let leadMinutes = typeof leadMinutesOverride === 'number' ? leadMinutesOverride : 10;
+    if (typeof leadMinutesOverride !== 'number') {
+      try {
+        const stored = await AsyncStorage.getItem('notificationLeadMinutes');
+        if (stored) {
+          const parsed = parseInt(stored, 10);
+          if (!isNaN(parsed)) {
+            if (parsed === -1) {
+              const custom = await AsyncStorage.getItem('notificationCustomMinutes');
+              const cParsed = parseInt(custom || '', 10);
+              if (!isNaN(cParsed) && cParsed > 0) leadMinutes = cParsed;
+            } else if (parsed > 0) {
+              leadMinutes = parsed;
+            }
           }
         }
-      }
-    } catch {}
+      } catch {}
+    }
     console.log('[notify] computed leadMinutes', leadMinutes);
 
     const start = new Date(startDateISO);
@@ -324,17 +355,33 @@ export const scheduleReminderSpeechNotification = async ({
       finalTrigger: new Date(triggerMs).toISOString(),
     });
 
-    // Compute display minutes from trigger to start to keep message accurate
-    const displayMinutes = Math.round((start.getTime() - triggerMs) / (60 * 1000));
-    const body = displayMinutes < 1
-      ? `Hey ${username}, you have ${meetingName} in less than a minute.`
-      : `Hey ${username}, you have ${meetingName} in ${displayMinutes} minutes.`;
+    // Prefer Gemini one-line from the reminder when available
+    let body = null;
+    try {
+      if (reminderId) {
+        const r = await getReminder(reminderId);
+        const data = r?.data || r?.reminder || r;
+        if (data?.aiNotificationLine) body = data.aiNotificationLine;
+        if (!meetingName && data?.title) meetingName = data.title;
+        // Best-effort username from stored user
+        if (!username) {
+          const userString = await AsyncStorage.getItem('user');
+          if (userString) { try { const u = JSON.parse(userString); username = u?.fullname || 'there'; } catch {} }
+        }
+      }
+    } catch {}
+    if (!body) {
+      const displayMinutes = Math.round((start.getTime() - triggerMs) / (60 * 1000));
+      body = displayMinutes < 1
+        ? `Hey ${username || 'there'}, you have ${meetingName || 'your meeting'} in less than a minute.`
+        : `Hey ${username || 'there'}, you have ${meetingName || 'your meeting'} in ${displayMinutes} minutes.`;
+    }
 
-    // Ensure TTS exists with fixedMinutes so voice matches the text
+    // Ensure TTS exists (prefer server-side Gemini line if present)
     let effectiveTextHash = textHash || null;
     try {
       if (reminderId) {
-        const ensureRes = await ensureReminderTTS(reminderId, { fixedMinutes: displayMinutes });
+        const ensureRes = await ensureReminderTTS(reminderId, {});
         effectiveTextHash = ensureRes?.tts?.textHash || effectiveTextHash;
       }
     } catch {}
@@ -378,35 +425,17 @@ export const scheduleReminderSpeechNotification = async ({
       },
     }, trigger);
 
-    // 2) Schedule the native alarm to auto-play audio in background/killed
+    // 2) Schedule the native alarm to auto-play audio in background/killed, scoped to user
     try {
-      await NativeModules.AlarmScheduler?.schedule(triggerMs, String(reminderId), localAudioPath || '');
+      const userId = await getCurrentUserId();
+      await NativeModules.AlarmScheduler?.scheduleForUser?.(triggerMs, String(reminderId), localAudioPath || '', String(userId));
     } catch (e) {
       console.warn('[alarm] schedule failed', e?.message);
     }
 
-    // Optionally also schedule with Expo as a fallback when app is in foreground only
-    let expoId = null;
-    try {
-      expoId = await Notifications.scheduleNotificationAsync({
-        content: {
-          title: 'Upcoming Reminder',
-          body,
-          sound: 'default',
-          data: {
-            type: 'reminder_speech',
-            reminderId: reminderId || null,
-            startDateISO,
-            localAudioPath: localAudioPath || null,
-          },
-        },
-        trigger: new Date(triggerMs),
-      });
-    } catch {}
-
-    console.log('[notify] scheduled notifeeId', notifeeId, 'expoId', expoId);
+    console.log('[notify] scheduled notifeeId', notifeeId);
     if (reminderId) {
-      await setScheduledFor(String(reminderId), { notifeeId, expoId });
+      await setScheduledFor(String(reminderId), { notifeeId });
     }
     return { scheduled: true, id: notifeeId };
   } catch (e) {
@@ -438,32 +467,40 @@ export const rescheduleAllTimeBasedReminders = async () => {
       try { const user = JSON.parse(userString); username = user?.fullname || 'there'; } catch {}
     }
 
-    // Determine current lead minutes setting to use as fixedMinutes
-    let leadMinutes = 5;
-    try {
-      const stored = await AsyncStorage.getItem('notificationLeadMinutes');
-      if (stored) {
-        const parsed = parseInt(stored, 10);
-        if (!isNaN(parsed)) {
-          if (parsed === -1) {
-            const custom = await AsyncStorage.getItem('notificationCustomMinutes');
-            const cParsed = parseInt(custom || '', 10);
-            if (!isNaN(cParsed) && cParsed > 0) leadMinutes = cParsed;
-          } else if (parsed > 0) {
-            leadMinutes = parsed;
-          }
+    // Build list of items to schedule next trigger for
+    const items = [];
+    for (const r of reminders) {
+      if (!(r.type === 'Task' || r.type === 'Meeting')) continue;
+      const id = r._id || r.id;
+      const title = r.title || 'your meeting';
+      const perItemMinutes = (typeof r.notificationPreferenceMinutes === 'number')
+        ? r.notificationPreferenceMinutes
+        : (r?.scheduleTime?.minutesBeforeStart ?? 10);
+      if (r.isManualSchedule && r.scheduleType === 'routine') {
+        // Compute next occurrence based on fixedTime and scheduleDays
+        const fixed = r?.scheduleTime?.fixedTime || '09:00';
+        const [hh, mm] = String(fixed).split(':').map(x => parseInt(x, 10));
+        const days = Array.isArray(r.scheduleDays) ? r.scheduleDays : [];
+        const now = new Date();
+        // Generate dates for the next 14 days and pick the earliest in future
+        let next = null;
+        for (let i = 0; i < 14; i++) {
+          const d = new Date(now);
+          d.setDate(d.getDate() + i);
+          d.setHours(hh || 9, mm || 0, 0, 0);
+          const dayOk = days.length === 0 || days.includes(d.getDay());
+          if (dayOk && d.getTime() > now.getTime()) { next = d; break; }
         }
+        if (next) items.push({ id, title, startISO: next.toISOString(), leadMinutes: perItemMinutes });
+      } else {
+        const startISO = r.startDate || r.startTime || null;
+        if (startISO) items.push({ id, title, startISO, leadMinutes: perItemMinutes });
       }
-    } catch {}
-
-    const items = [
-      ...reminders.filter(r => r.type === 'Task' || r.type === 'Meeting').map(r => ({
-        id: r._id || r.id,
-        title: r.title || 'your meeting',
-        startISO: r.startDate || r.startTime,
-      })),
-      ...calendarEvents.map(e => ({ id: e.id, title: e.title, startISO: e.startDate }))
-    ];
+    }
+    // Include calendar events unchanged (use default lead minutes)
+    for (const e of calendarEvents) {
+      items.push({ id: e.id, title: e.title, startISO: e.startDate, leadMinutes: undefined });
+    }
 
     for (const it of items) {
       try {
@@ -475,7 +512,7 @@ export const rescheduleAllTimeBasedReminders = async () => {
         let textHash = null;
         if (id) {
           try {
-            const ensureRes = await ensureReminderTTS(id, { fixedMinutes: leadMinutes });
+            const ensureRes = await ensureReminderTTS(id, { fixedMinutes: (typeof it.leadMinutes === 'number' ? it.leadMinutes : undefined) });
             textHash = ensureRes?.tts?.textHash || null;
           } catch {}
         }
@@ -486,6 +523,7 @@ export const rescheduleAllTimeBasedReminders = async () => {
           reminderId: id,
           textHash,
           replaceExisting: true,
+          leadMinutes: it.leadMinutes,
         });
       } catch {}
     }
@@ -499,7 +537,50 @@ export const rescheduleAllTimeBasedReminders = async () => {
 // Clear local caches so subsequent schedules are not skipped by legacy caches
 export const clearAllSchedulingCaches = async () => {
   try {
-    await AsyncStorage.removeItem(SCHEDULED_MAP_KEY);
+    const userId = await getCurrentUserId();
+    await AsyncStorage.removeItem(keyForUser(userId));
     await AsyncStorage.removeItem('scheduledCalendarEvents');
+  } catch {}
+};
+
+// Cancel all local Notifee trigger notifications for the current user and clear the per-user map
+export const cancelAllLocalSchedulesForCurrentUser = async () => {
+  try {
+    const userId = await getCurrentUserId();
+    const key = keyForUser(userId);
+    const raw = await AsyncStorage.getItem(key);
+    const map = raw ? JSON.parse(raw) : {};
+    const ids = Object.values(map).map(v => v?.notifeeId).filter(Boolean);
+    for (const id of ids) {
+      try { await notifee.cancelTriggerNotification(id); } catch {}
+    }
+    await AsyncStorage.removeItem(key);
+  } catch {}
+};
+
+// Clear ALL locally scheduled notifications and state across any previously logged-in users on this device.
+// Use this on login before rescheduling for the new user to ensure user-scoped schedules.
+export const cancelAllLocalSchedulesAllUsers = async () => {
+  try {
+    // Cancel any native alarms stored by our module (best-effort)
+    try { await NativeModules.AlarmScheduler?.cancelAll?.(); } catch {}
+
+    // Read all keys and clear our namespaced maps
+    const keys = await AsyncStorage.getAllKeys();
+    const toRead = (keys || []).filter(k => k && k.startsWith('scheduledReminderNotificationsMap:'));
+    for (const key of toRead) {
+      try {
+        const raw = await AsyncStorage.getItem(key);
+        const map = raw ? JSON.parse(raw) : {};
+        const ids = Object.values(map).map(v => v?.notifeeId).filter(Boolean);
+        for (const id of ids) {
+          try { await notifee.cancelTriggerNotification(id); } catch {}
+        }
+        await AsyncStorage.removeItem(key);
+      } catch {}
+    }
+
+    // Safety: cancel all remaining scheduled notifications
+    try { await notifee.cancelAllNotifications(); } catch {}
   } catch {}
 };

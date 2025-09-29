@@ -3,6 +3,7 @@ import * as Google from 'expo-auth-session/providers/google';
 import { login, signup, googleSignIn } from './api';
 import { Alert, Platform } from 'react-native';
 import React from 'react'
+import AsyncStorage from '@react-native-async-storage/async-storage';
 // For web, you need to configure the redirect URL
 WebBrowser.maybeCompleteAuthSession();
 // Google OAuth configuration
@@ -64,7 +65,20 @@ const useGoogleAuth = (navigation) => {
     try {
       // Directly authenticate with backend using ID token
       await googleSignIn(idToken);
-      navigation.navigate('Dashboard');
+      // Decide where to go based on per-user first-time flag
+      try {
+        const rawUser = await AsyncStorage.getItem('user');
+        const user = rawUser ? JSON.parse(rawUser) : null;
+        const userKey = user?._id || user?.id || user?.email || 'anonymous';
+        const seen = await AsyncStorage.getItem(`landingSeen:${userKey}`);
+        if (!seen) {
+          navigation.replace('FirstTimeLanding');
+        } else {
+          navigation.replace('Dashboard');
+        }
+      } catch {
+        navigation.replace('Dashboard');
+      }
     } catch (error) {
       console.error('Google sign-in error:', error);
       Alert.alert('Error', 'Failed to sign in with Google');

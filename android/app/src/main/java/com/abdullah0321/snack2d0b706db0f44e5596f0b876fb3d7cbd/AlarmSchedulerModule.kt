@@ -13,9 +13,67 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import org.json.JSONObject
 
 class AlarmSchedulerModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
     override fun getName(): String = "AlarmScheduler"
+
+    private fun alarmsPrefs() = ctx.getSharedPreferences("voxa_alarms", Context.MODE_PRIVATE)
+    private fun metaPrefs() = ctx.getSharedPreferences("voxa_meta", Context.MODE_PRIVATE)
+
+    private fun persist(userId: String?, reminderId: String, triggerAt: Long, audioPath: String) {
+        try {
+            val key = "$reminderId:$triggerAt"
+            val obj = JSONObject()
+                .put("userId", userId ?: "")
+                .put("reminderId", reminderId)
+                .put("triggerAt", triggerAt)
+                .put("audioPath", audioPath)
+            alarmsPrefs().edit().putString(key, obj.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    private fun removePersisted(reminderId: String) {
+        try {
+            val prefs = alarmsPrefs()
+            val keys = prefs.all.keys.toList()
+            val editor = prefs.edit()
+            for (k in keys) {
+                if (k.startsWith("$reminderId:")) editor.remove(k)
+            }
+            editor.apply()
+        } catch (_: Exception) {}
+    }
+
+    private fun removeAllForUser(userId: String) {
+        try {
+            val prefs = alarmsPrefs()
+            val keys = prefs.all.keys.toList()
+            val editor = prefs.edit()
+            for (k in keys) {
+                val raw = prefs.getString(k, null) ?: continue
+                try {
+                    val obj = JSONObject(raw)
+                    if (userId == obj.optString("userId")) editor.remove(k)
+                } catch (_: Exception) {}
+            }
+            editor.apply()
+        } catch (_: Exception) {}
+    }
+
+    @ReactMethod
+    fun setCurrentUser(userId: String?, promise: Promise) {
+        try {
+            metaPrefs().edit().putString("current_user_id", userId ?: "").apply()
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("SET_CURRENT_USER_ERROR", e)
+        }
+    }
+
+    private fun currentUserId(): String? = try {
+        metaPrefs().getString("current_user_id", "")?.takeIf { it.isNotEmpty() }
+    } catch (_: Exception) { null }
 
     @ReactMethod
     fun canScheduleExactAlarms(promise: Promise) {
@@ -249,36 +307,46 @@ class AlarmSchedulerModule(private val ctx: ReactApplicationContext) : ReactCont
 
     @ReactMethod
     fun schedule(timestampMs: Double, reminderId: String, audioPath: String, promise: Promise) {
+        // Legacy: use currently set user if available
+        scheduleForUser(timestampMs, reminderId, audioPath, currentUserId() ?: "", promise)
+    }
+
+    @ReactMethod
+    fun scheduleForUser(timestampMs: Double, reminderId: String, audioPath: String, userId: String, promise: Promise) {
         try {
             val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val triggerAt = timestampMs.toLong()
+            val uniqueKey = "$reminderId:$triggerAt"
+
             val fireIntent = Intent(ctx, AlarmReceiver::class.java).apply {
                 putExtra("reminderId", reminderId)
                 putExtra("audioPath", audioPath)
+                putExtra("userId", userId)
+                data = Uri.parse("voxa://alarm/" + Uri.encode(uniqueKey))
+                action = "com.voxa.ALARM_TRIGGER_" + uniqueKey
             }
+            val firePiFlags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
             val firePi = PendingIntent.getBroadcast(
                 ctx,
-                reminderId.hashCode(),
+                uniqueKey.hashCode(),
                 fireIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
+                firePiFlags
             )
-            val triggerAt = timestampMs.toLong()
 
-            // Prefer AlarmClock for OEM reliability
             try {
-                // Use default app launch intent to avoid direct dependency on MainActivity class name
-                val launchIntent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)?.apply {
+                // Use NoOpActivity so the UI is not brought to foreground on delivery (e.g., Nokia)
+                val noopIntent = Intent(ctx, NoOpActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                } ?: Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.fromParts("package", ctx.packageName, null)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    data = Uri.parse("voxa://show/" + Uri.encode(uniqueKey))
+                    action = "com.voxa.ALARM_SHOW_" + uniqueKey
                 }
-                val showIntent = PendingIntent.getActivity(
+                val showPi = PendingIntent.getActivity(
                     ctx,
-                    (reminderId.hashCode() shl 1) or 1,
-                    launchIntent,
+                    (uniqueKey.hashCode() shl 1) or 1,
+                    noopIntent,
                     PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
                 )
-                val acInfo = AlarmManager.AlarmClockInfo(triggerAt, showIntent)
+                val acInfo = AlarmManager.AlarmClockInfo(triggerAt, showPi)
                 am.setAlarmClock(acInfo, firePi)
             } catch (_: Exception) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -287,6 +355,10 @@ class AlarmSchedulerModule(private val ctx: ReactApplicationContext) : ReactCont
                     am.setExact(AlarmManager.RTC_WAKEUP, triggerAt, firePi)
                 }
             }
+
+            // Persist for reboot recovery (include userId)
+            persist(userId, reminderId, triggerAt, audioPath)
+
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("SCHEDULE_ERROR", e)
@@ -297,20 +369,77 @@ class AlarmSchedulerModule(private val ctx: ReactApplicationContext) : ReactCont
     fun cancel(reminderId: String, promise: Promise) {
         try {
             val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val intent = Intent(ctx, AlarmReceiver::class.java)
-            val pi = PendingIntent.getBroadcast(
-                ctx,
-                reminderId.hashCode(),
-                intent,
-                PendingIntent.FLAG_NO_CREATE or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
-            )
-            if (pi != null) {
-                am.cancel(pi)
-                pi.cancel()
+            val prefs = alarmsPrefs()
+            val keys = prefs.all.keys.toList()
+            for (k in keys) {
+                if (!k.startsWith("$reminderId:")) continue
+                val triggerAt = try { k.substringAfter(":").toLong() } catch (_: Exception) { 0L }
+                if (triggerAt <= 0L) continue
+                val uniqueKey = "$reminderId:$triggerAt"
+                val intent = Intent(ctx, AlarmReceiver::class.java).apply {
+                    putExtra("reminderId", reminderId)
+                    putExtra("userId", currentUserId() ?: "")
+                    data = Uri.parse("voxa://alarm/" + Uri.encode(uniqueKey))
+                    action = "com.voxa.ALARM_TRIGGER_" + uniqueKey
+                }
+                val pi = PendingIntent.getBroadcast(
+                    ctx,
+                    uniqueKey.hashCode(),
+                    intent,
+                    PendingIntent.FLAG_NO_CREATE or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
+                )
+                if (pi != null) {
+                    am.cancel(pi)
+                    pi.cancel()
+                }
             }
+
+            // Best-effort cancel: remove persisted entries so BootReceiver won't reschedule them
+            removePersisted(reminderId)
+
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("CANCEL_ERROR", e)
+        }
+    }
+
+    @ReactMethod
+    fun cancelAllForUser(userId: String, promise: Promise) {
+        try {
+            val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val prefs = alarmsPrefs()
+            val keys = prefs.all.keys.toList()
+            for (k in keys) {
+                val raw = prefs.getString(k, null) ?: continue
+                try {
+                    val obj = JSONObject(raw)
+                    if (userId == obj.optString("userId")) {
+                        val rid = obj.optString("reminderId", null) ?: continue
+                        val triggerAt = obj.optLong("triggerAt", 0L)
+                        val uniqueKey = "$rid:$triggerAt"
+                        val intent = Intent(ctx, AlarmReceiver::class.java).apply {
+                            putExtra("reminderId", rid)
+                            putExtra("userId", userId)
+                            data = Uri.parse("voxa://alarm/" + Uri.encode(uniqueKey))
+                            action = "com.voxa.ALARM_TRIGGER_" + uniqueKey
+                        }
+                        val pi = PendingIntent.getBroadcast(
+                            ctx,
+                            uniqueKey.hashCode(),
+                            intent,
+                            PendingIntent.FLAG_NO_CREATE or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
+                        )
+                        if (pi != null) {
+                            am.cancel(pi)
+                            pi.cancel()
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+            removeAllForUser(userId)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("CANCEL_ALL_FOR_USER_ERROR", e)
         }
     }
 }

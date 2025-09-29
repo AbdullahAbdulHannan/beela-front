@@ -1,5 +1,7 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NativeModules } from 'react-native';
+import notifee from '@notifee/react-native';
 
 // Use environment variable or default to local development URL
 export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'https://voxa-backend-three.vercel.app/api';
@@ -108,7 +110,24 @@ api.interceptors.response.use(
         }
       } catch (error) {
         console.error('Error refreshing token:', error);
-        // If refresh fails, clear tokens and redirect to login
+        // Cancel any scheduled items for the current user (native + notifee) and clear per-user map
+        try {
+          const rawUser = await AsyncStorage.getItem('user');
+          const user = rawUser ? JSON.parse(rawUser) : null;
+          const userId = user?._id || user?.id || user?.email || '';
+          if (userId) {
+            try { await NativeModules?.AlarmScheduler?.cancelAllForUser?.(String(userId)); } catch {}
+            try {
+              const key = `scheduledReminderNotificationsMap:${String(userId)}`;
+              const raw = await AsyncStorage.getItem(key);
+              const map = raw ? JSON.parse(raw) : {};
+              const ids = Object.values(map).map(v => v?.notifeeId).filter(Boolean);
+              for (const id of ids) { try { await notifee.cancelTriggerNotification(id); } catch {} }
+              await AsyncStorage.removeItem(key);
+            } catch {}
+          }
+          try { await NativeModules?.AlarmScheduler?.setCurrentUser?.(""); } catch {}
+        } catch {}
         await AsyncStorage.removeItem('userToken');
         await AsyncStorage.removeItem('user');
         // You might want to add navigation to login screen here
@@ -131,6 +150,9 @@ export const signup = async (userData) => {
     // Persist user info if provided by backend
     if (response.data.user) {
       await AsyncStorage.setItem('user', JSON.stringify(response.data.user));
+      const u = response.data.user;
+      const userId = u?._id || u?.id || u?.email || '';
+      try { await NativeModules?.AlarmScheduler?.setCurrentUser?.(String(userId)); } catch {}
     }
     return response.data;
   } catch (error) {
@@ -154,6 +176,9 @@ export const login = async (credentials) => {
         // Persist user info if provided by backend
         if (response.data.user) {
           await AsyncStorage.setItem('user', JSON.stringify(response.data.user));
+          const u = response.data.user;
+          const userId = u?._id || u?.id || u?.email || '';
+          try { await NativeModules?.AlarmScheduler?.setCurrentUser?.(String(userId)); } catch {}
         }
         return response.data;
       } catch (googleError) {
@@ -170,6 +195,9 @@ export const login = async (credentials) => {
         // Persist user info if provided by backend
         if (response.data.user) {
           await AsyncStorage.setItem('user', JSON.stringify(response.data.user));
+          const u = response.data.user;
+          const userId = u?._id || u?.id || u?.email || '';
+          try { await NativeModules?.AlarmScheduler?.setCurrentUser?.(String(userId)); } catch {}
         }
         return response.data;
       }
@@ -182,6 +210,9 @@ export const login = async (credentials) => {
       // Persist user info if provided by backend
       if (response.data.user) {
         await AsyncStorage.setItem('user', JSON.stringify(response.data.user));
+        const u = response.data.user;
+        const userId = u?._id || u?.id || u?.email || '';
+        try { await NativeModules?.AlarmScheduler?.setCurrentUser?.(String(userId)); } catch {}
       }
       return response.data;
     }
@@ -201,6 +232,9 @@ export const googleSignIn = async (accessToken) => {
     // Persist user info if provided by backend
     if (response.data.user) {
       await AsyncStorage.setItem('user', JSON.stringify(response.data.user));
+      const u = response.data.user;
+      const userId = u?._id || u?.id || u?.email || '';
+      try { await NativeModules?.AlarmScheduler?.setCurrentUser?.(String(userId)); } catch {}
     }
     return response.data;
   } catch (error) {
@@ -211,6 +245,23 @@ export const googleSignIn = async (accessToken) => {
 
 export const logout = async () => {
   try {
+    // Cancel native alarms for the current user on this device before clearing storage
+    const rawUser = await AsyncStorage.getItem('user');
+    const user = rawUser ? JSON.parse(rawUser) : null;
+    const userId = user?._id || user?.id || user?.email || '';
+    if (userId) {
+      try { await NativeModules?.AlarmScheduler?.cancelAllForUser?.(String(userId)); } catch {}
+      // Cancel Notifee triggers and clear per-user scheduled map
+      try {
+        const key = `scheduledReminderNotificationsMap:${String(userId)}`;
+        const raw = await AsyncStorage.getItem(key);
+        const map = raw ? JSON.parse(raw) : {};
+        const ids = Object.values(map).map(v => v?.notifeeId).filter(Boolean);
+        for (const id of ids) { try { await notifee.cancelTriggerNotification(id); } catch {} }
+        await AsyncStorage.removeItem(key);
+      } catch {}
+    }
+    try { await NativeModules?.AlarmScheduler?.setCurrentUser?.(""); } catch {}
     await AsyncStorage.removeItem('userToken');
     await AsyncStorage.removeItem('user');
   } catch (error) {

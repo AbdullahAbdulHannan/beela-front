@@ -9,6 +9,12 @@
   <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
   <uses-permission android:name="android.permission.WAKE_LOCK"/>
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+  <!-- Android 13+ notifications runtime permission -->
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+  <!-- Allow full-screen alarm-style notifications on some OEMs (e.g., MIUI) -->
+  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
@@ -26,11 +32,28 @@
         <category android:name="android.intent.category.LAUNCHER"/>
       </intent-filter>
     </activity>
-
+    <!-- Transparent activity used as a no-op AlarmClock showIntent so the app UI is not brought to foreground -->
+    <activity
+      android:name=".NoOpActivity"
+      android:exported="false"
+      android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen"
+      android:excludeFromRecents="true"
+      android:noHistory="true"
+      android:taskAffinity="">
+    </activity>
     <receiver
       android:name=".AlarmReceiver"
       android:exported="true" />
-
+    <!-- Re-schedule alarms after device reboot (direct-boot aware) -->
+    <receiver
+      android:name=".BootReceiver"
+      android:exported="true"
+      android:directBootAware="true">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+      </intent-filter>
+    </receiver>
     <service
       android:name=".AudioPlaybackService"
       android:exported="false"

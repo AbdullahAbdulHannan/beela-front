@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, StatusBar } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from './constants/colors';
 import { signup } from './services/api';
@@ -50,7 +50,7 @@ export default function SignUp({ navigation }) {
     try {
       setIsLoading(true);
       await signup({ fullname: name, email, password });
-      navigation.navigate('Dashboard');
+      navigation.navigate('Login');
     } catch (err) {
       // Normalize message from API service throws
       const message = typeof err === 'string' ? err : (err?.message || 'Signup failed. Please try again.');
@@ -62,6 +62,8 @@ export default function SignUp({ navigation }) {
 
   return (
     <View style={styles.container}>
+            <StatusBar barStyle="light-content" backgroundColor={Colors.backgroundStatus} />
+      
       <Text style={styles.title}>Sign Up</Text>
 
       <Text style={styles.welcome}>Create Account</Text>

@@ -1,26 +1,37 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, StatusBar } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from './constants/colors';
 
 import { login } from './services/api';
 import useGoogleAuth from './services/authService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { rescheduleAllTimeBasedReminders, cancelAllLocalSchedulesAllUsers } from './services/notificationService';
+import { NativeModules } from 'react-native';
 
 export default function Login({ navigation }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [secure, setSecure] = useState(true);
-  const [remember, setRemember] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState('');
 
   const { promptAsync } = useGoogleAuth(navigation);
 
+  const afterAuthReschedule = async () => {
+    // 1) Clear device state (native + Notifee) to avoid stale schedules from any previous user
+    try { await NativeModules?.AlarmScheduler?.cancelAll?.(); } catch {}
+    try { await cancelAllLocalSchedulesAllUsers(); } catch {}
+    // 2) Reschedule for the now-logged-in user
+    try { await rescheduleAllTimeBasedReminders(); } catch {}
+  };
+
   const handleGoogleSignIn = async () => {
     try {
       setGoogleLoading(true);
       await promptAsync();
+      await afterAuthReschedule();
     } catch (err) {
       setError('Failed to sign in with Google. Please try again.');
     } finally {
@@ -38,8 +49,23 @@ export default function Login({ navigation }) {
 
     try {
       setIsLoading(true);
-      await login({ email, password, rememberMe: remember });
+      await login({ email, password });
+      await afterAuthReschedule();
       navigation.navigate('Dashboard');
+      // Determine if this user has seen the landing screen
+      try {
+        const rawUser = await AsyncStorage.getItem('user');
+        const user = rawUser ? JSON.parse(rawUser) : null;
+        const userKey = user?._id || user?.id || user?.email || 'anonymous';
+        const seen = await AsyncStorage.getItem(`landingSeen:${userKey}`);
+        if (!seen) {
+          navigation.replace('FirstTimeLanding');
+        } else {
+          navigation.replace('Dashboard');
+        }
+      } catch {
+        navigation.replace('Dashboard');
+      }
     } catch (err) {
       const message = typeof err === 'string' ? err : (err?.message || 'Login failed. Please try again.');
       setError(message);
@@ -50,6 +76,8 @@ export default function Login({ navigation }) {
 
   return (
     <View style={styles.container}>
+            <StatusBar barStyle="light-content" backgroundColor={Colors.backgroundStatus} />
+      
       <Text style={styles.title}>Sign In</Text>
 
       <Text style={styles.welcome}>Welcome Back!</Text>
@@ -94,16 +122,8 @@ export default function Login({ navigation }) {
       {/* Error Message */}
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-      {/* Remember & Forgot Password */}
+      {/* Forgot Password */}
       <View style={styles.row}>
-        <TouchableOpacity
-          style={[styles.checkbox, remember && styles.checkboxChecked]}
-          onPress={() => setRemember(!remember)}
-        >
-          {remember && <Ionicons name="checkmark" size={14} color={Colors.btnText} />}
-        </TouchableOpacity>
-        <Text style={styles.rememberText}>Remember me</Text>
-
         <TouchableOpacity style={{ marginLeft: 'auto' }} onPress={() => navigation.navigate('ForgotPassword')}>
           <Text style={styles.forgotText}>Forgot password?</Text>
         </TouchableOpacity>
@@ -208,23 +228,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     width: '85%',
     marginBottom: 30,
-  },
-  checkbox: {
-    width: 18,
-    height: 18,
-    borderWidth: 1,
-    borderColor: Colors.text,
-    marginRight: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 5,
-  },
-  checkboxChecked: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-  rememberText: {
-    color: Colors.text,
   },
   forgotText: {
     color: Colors.linkText,

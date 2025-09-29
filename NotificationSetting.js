@@ -96,7 +96,7 @@ export default function NotificationSettings({ navigation }) {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+      <StatusBar barStyle="light-content" backgroundColor={Colors.backgroundStatus} />
       <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
