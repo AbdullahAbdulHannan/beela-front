@@ -351,4 +351,15 @@ export const getCoordinatesFromAddress = async (address) => {
   return response.data;
 };
 
+// Location backend APIs
+export const setLocationPermission = async (backgroundGranted) => {
+  const response = await api.post('/location/permission', { backgroundGranted });
+  return response.data;
+};
+
+export const scanNearbyForLocationReminders = async ({ lat, lng, radius = 500 }) => {
+  const response = await api.post('/location/scan', { lat, lng, radius });
+  return response.data;
+};
+
 export default api;

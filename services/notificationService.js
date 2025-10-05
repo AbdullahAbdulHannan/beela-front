@@ -5,9 +5,9 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import * as FileSystem from 'expo-file-system';
 import { Audio } from 'expo-av';
-import { Platform, NativeModules } from 'react-native';
+import { Platform, NativeModules, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ensureReminderTTS, getReminders, getCalendarEvents, getReminder } from './api';
+import { ensureReminderTTS, getReminders, getCalendarEvents, getReminder, setLocationPermission, scanNearbyForLocationReminders } from './api';
 
 // Configure how notifications are displayed when the app is foregrounded
 Notifications.setNotificationHandler({
@@ -20,7 +20,10 @@ Notifications.setNotificationHandler({
 
 let listenersRegistered = false;
 const GEOFENCE_TASK = 'voxa_geofence_task';
+const LOCATION_SCAN_TASK = 'voxa_location_scan_task';
 let geofenceTaskRegistered = false;
+let locationTaskRegistered = false;
+let fgLocationWatch = null;
 
 // Storage keys for scheduled notification IDs per reminder, namespaced by user
 const baseKey = 'scheduledReminderNotificationsMap';
@@ -33,6 +36,73 @@ async function getCurrentUserId() {
     return u?._id || u?.id || u?.email || 'anonymous';
   } catch {
     return 'anonymous';
+  }
+}
+
+async function startForegroundLocationWatchIfNoBG() {
+  try {
+    if (fgLocationWatch) return;
+    fgLocationWatch = await Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.Balanced,
+        distanceInterval: 10,
+        timeInterval: 30 * 1000,
+      },
+      async (loc) => {
+        try {
+          if (!loc?.coords) return;
+          const { latitude, longitude, accuracy } = loc.coords;
+          console.log('[loc-fg] update', { latitude, longitude, accuracy });
+          const res = await scanNearbyForLocationReminders({ lat: latitude, lng: longitude, radius: 500 });
+          const results = res?.results || [];
+          console.log('[loc-fg] scan results', results.length);
+          for (const r of results) {
+            if (!r || r.skipped) continue;
+            let localAudioPath = null;
+            try {
+              if (r.reminderId && r.ttsTextHash) {
+                localAudioPath = await ensureReminderAudioCached({ reminderId: r.reminderId, textHash: r.ttsTextHash });
+              }
+            } catch {}
+            try {
+              const channelId = await notifee.createChannel({ id: 'reminders', name: 'Reminders', importance: AndroidImportance.HIGH });
+              await notifee.displayNotification({
+                id: `${r.reminderId}-loc-${Date.now()}`,
+                android: { channelId, pressAction: { id: 'default' }, importance: AndroidImportance.HIGH },
+                title: 'Nearby Reminder',
+                body: r.body || r.bodyFallback || `Reminder: You're near a place for ${r.title || 'your item'}.`,
+                data: { type: 'location_reminder', reminderId: r.reminderId, localAudioPath: localAudioPath || null },
+              });
+            } catch {}
+            if (localAudioPath) { try { await playAudioFile(localAudioPath); } catch {} }
+          }
+        } catch {}
+      }
+    );
+    // Immediate scan on startup for foreground fallback
+    try {
+      const now = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      if (now?.coords) {
+        console.log('[loc-fg] immediate scan kickoff');
+        const { latitude, longitude } = now.coords;
+        await scanNearbyForLocationReminders({ lat: latitude, lng: longitude, radius: 500 });
+      }
+    } catch {}
+    return true;
+  } catch (e) {
+    console.warn('[loc-fg] watch failed', e?.message);
+    return false;
+  }
+}
+
+export async function scanNow() {
+  try {
+    const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+    if (!loc?.coords) return { success: false };
+    const res = await scanNearbyForLocationReminders({ lat: loc.coords.latitude, lng: loc.coords.longitude, radius: 500 });
+    return res || { success: true, results: [] };
+  } catch (e) {
+    return { success: false, message: e?.message };
   }
 }
 
@@ -119,12 +189,116 @@ export const initLocationServices = async () => {
     }
     // Try background permission, ignore if denied
     try {
-      await Location.requestBackgroundPermissionsAsync();
+      const bg = await Location.requestBackgroundPermissionsAsync();
+      if (bg?.status === 'granted') {
+        try { await setLocationPermission(true); } catch {}
+        // Start periodic background location updates for scanning
+        await startBackgroundLocationScan();
+      } else {
+        // Foreground fallback: watch position while app is open
+        await startForegroundLocationWatchIfNoBG();
+        // Hint user to enable "Allow all the time" in settings for reliable background scanning
+        try { Linking.openSettings?.(); } catch {}
+      }
     } catch {}
   } catch (e) {
     console.warn('[location] init failed', e);
   }
 };
+
+function defineLocationScanTaskOnce() {
+  if (locationTaskRegistered) return;
+  if (!TaskManager.isTaskDefined(LOCATION_SCAN_TASK)) {
+    TaskManager.defineTask(LOCATION_SCAN_TASK, async ({ data, error }) => {
+      try {
+        if (error) { console.warn('[loc-scan] task error', error); return; }
+        const { locations } = data || {};
+        const loc = Array.isArray(locations) && locations.length ? locations[0] : null;
+        if (!loc?.coords) return;
+        const { latitude, longitude, accuracy } = loc.coords;
+        console.log('[loc-bg] update', { latitude, longitude, accuracy });
+        // Call backend to evaluate triggers with anti-spam/collision rules
+        let results = [];
+        try {
+          const res = await scanNearbyForLocationReminders({ lat: latitude, lng: longitude, radius: 500 });
+          results = res?.results || [];
+          console.log('[loc-bg] scan results', results.length);
+        } catch (e) {
+          // swallow network errors
+          return;
+        }
+        // Trigger local notifications for each result
+        for (const r of results) {
+          if (!r || r.skipped) continue;
+          // try to download audio ahead of time if provided
+          let localAudioPath = null;
+          try {
+            if (r.reminderId && r.ttsTextHash) {
+              localAudioPath = await ensureReminderAudioCached({ reminderId: r.reminderId, textHash: r.ttsTextHash });
+            }
+          } catch {}
+
+          // Notifee notification immediate
+          try {
+            const channelId = await notifee.createChannel({ id: 'reminders', name: 'Reminders', importance: AndroidImportance.HIGH });
+            await notifee.displayNotification({
+              id: `${r.reminderId}-loc-${Date.now()}`,
+              android: { channelId, pressAction: { id: 'default' }, importance: AndroidImportance.HIGH },
+              title: 'Nearby Reminder',
+              body: r.body || r.bodyFallback || `Reminder: You're near a place for ${r.title || 'your item'}.`,
+              data: { type: 'location_reminder', reminderId: r.reminderId, localAudioPath: localAudioPath || null },
+            });
+          } catch {}
+
+          // Attempt audio playback via JS as a fallback; native service may also play if integrated
+          if (localAudioPath) {
+            try { await playAudioFile(localAudioPath); } catch {}
+          }
+        }
+      } catch (e) {
+        // swallow
+      }
+    });
+  }
+  locationTaskRegistered = true;
+}
+
+async function startBackgroundLocationScan() {
+  try {
+    defineLocationScanTaskOnce();
+    const has = await Location.hasStartedLocationUpdatesAsync(LOCATION_SCAN_TASK);
+    if (has) return true;
+    await Location.startLocationUpdatesAsync(LOCATION_SCAN_TASK, {
+      // Balanced accuracy to save battery; adjust as needed
+      accuracy: Location.Accuracy.Balanced,
+      distanceInterval: 25, // meters
+      timeInterval: 30 * 1000, // 30 seconds
+      showsBackgroundLocationIndicator: false,
+      pausesUpdatesAutomatically: true,
+      foregroundService: Platform.select({
+        android: {
+          notificationTitle: 'Location Scanning',
+          notificationBody: 'Scanning nearby places for your location reminders',
+          notificationColor: '#4668FF',
+        },
+        ios: undefined,
+      }),
+    });
+    // Immediate scan on startup for background service
+    try {
+      const now = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      if (now?.coords) {
+        console.log('[loc-bg] immediate scan kickoff');
+        const { latitude, longitude } = now.coords;
+        await scanNearbyForLocationReminders({ lat: latitude, lng: longitude, radius: 500 });
+      }
+    } catch {}
+    return true;
+  } catch (e) {
+    console.warn('[loc-scan] start failed', e?.message);
+    return false;
+  }
+}
 
 export const startGeofencingForLocationReminder = async ({ id, title, location }) => {
   try {
@@ -355,36 +529,46 @@ export const scheduleReminderSpeechNotification = async ({
       finalTrigger: new Date(triggerMs).toISOString(),
     });
 
-    // Prefer Gemini one-line from the reminder when available
-    let body = null;
-    try {
-      if (reminderId) {
-        const r = await getReminder(reminderId);
-        const data = r?.data || r?.reminder || r;
-        if (data?.aiNotificationLine) body = data.aiNotificationLine;
-        if (!meetingName && data?.title) meetingName = data.title;
-        // Best-effort username from stored user
-        if (!username) {
-          const userString = await AsyncStorage.getItem('user');
-          if (userString) { try { const u = JSON.parse(userString); username = u?.fullname || 'there'; } catch {} }
-        }
+    // Helper: get AI line by polling briefly (bounded) before fallback (do NOT generate TTS here)
+    const awaitAiLine = async (rid, maxWaitMs = 2500) => {
+      const startTs = Date.now();
+      let lastAi = null;
+      while (Date.now() - startTs < maxWaitMs) {
+        try {
+          // 1) GET reminder
+          const r = await getReminder(rid);
+          const data = r?.data || r?.reminder || r;
+          if (!meetingName && data?.title) meetingName = data.title;
+          if (!username) {
+            const userString = await AsyncStorage.getItem('user');
+            if (userString) { try { const u = JSON.parse(userString); username = u?.fullname || 'there'; } catch {} }
+          }
+          if (data?.aiNotificationLine) return data.aiNotificationLine;
+        } catch {}
+        await new Promise(r => setTimeout(r, 250));
       }
-    } catch {}
-    if (!body) {
-      const displayMinutes = Math.round((start.getTime() - triggerMs) / (60 * 1000));
-      body = displayMinutes < 1
-        ? `Hey ${username || 'there'}, you have ${meetingName || 'your meeting'} in less than a minute.`
-        : `Hey ${username || 'there'}, you have ${meetingName || 'your meeting'} in ${displayMinutes} minutes.`;
-    }
+      return lastAi;
+    };
 
-    // Ensure TTS exists (prefer server-side Gemini line if present)
-    let effectiveTextHash = textHash || null;
-    try {
-      if (reminderId) {
+    // Try to resolve AI line before scheduling
+    let body = null;
+    if (reminderId) {
+      body = await awaitAiLine(reminderId, 2500);
+      // After AI line is available (or even if still null), ensure TTS once to align audio text with AI line
+      try {
         const ensureRes = await ensureReminderTTS(reminderId, {});
         effectiveTextHash = ensureRes?.tts?.textHash || effectiveTextHash;
-      }
-    } catch {}
+        // If server exposes aiNotificationLine on ensure response, prefer it
+        if (!body && ensureRes?.aiNotificationLine) body = ensureRes.aiNotificationLine;
+      } catch {}
+    }
+    if (!body) {
+      // Friendly fallback: use the configured leadMinutes
+      const m = typeof leadMinutes === 'number' && leadMinutes > 0 ? leadMinutes : Math.max(1, Math.round((start.getTime() - triggerMs) / (60 * 1000)));
+      body = m <= 1
+        ? `Heads up ${username || 'there'} — ${meetingName || 'your task'} is due in about a minute.`
+        : `Heads up ${username || 'there'} — ${meetingName || 'your task'} is due in ${m} minutes.`;
+    }
 
     // Attempt to ensure audio cached before scheduling
     const localAudioPath = await ensureReminderAudioCached({ reminderId, textHash: effectiveTextHash });
@@ -427,6 +611,8 @@ export const scheduleReminderSpeechNotification = async ({
 
     // 2) Schedule the native alarm to auto-play audio in background/killed, scoped to user
     try {
+      // Redundant cancel to avoid duplicate native alarms in edge cases
+      try { await NativeModules.AlarmScheduler?.cancel(String(reminderId)); } catch {}
       const userId = await getCurrentUserId();
       await NativeModules.AlarmScheduler?.scheduleForUser?.(triggerMs, String(reminderId), localAudioPath || '', String(userId));
     } catch (e) {
@@ -512,7 +698,8 @@ export const rescheduleAllTimeBasedReminders = async () => {
         let textHash = null;
         if (id) {
           try {
-            const ensureRes = await ensureReminderTTS(id, { fixedMinutes: (typeof it.leadMinutes === 'number' ? it.leadMinutes : undefined) });
+            // Do not pass fixedMinutes so the server uses the same Gemini one-line for voice
+            const ensureRes = await ensureReminderTTS(id, {});
             textHash = ensureRes?.tts?.textHash || null;
           } catch {}
         }
@@ -584,3 +771,4 @@ export const cancelAllLocalSchedulesAllUsers = async () => {
     try { await notifee.cancelAllNotifications(); } catch {}
   } catch {}
 };
+

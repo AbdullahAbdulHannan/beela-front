@@ -27,9 +27,6 @@ const UserDashboard = () => {
 
   // Onboarding targets
   const headerProfileRef = useOnboardingTarget('header-profile');
-  const featureCreateRef = useOnboardingTarget('feature-create');
-  const featureSyncRef = useOnboardingTarget('feature-sync');
-  const featureMeetingsRef = useOnboardingTarget('feature-meetings');
 
   const features = [
     { id: '1', title: 'Create Reminder', subtitle: 'Add To-Do', icon: 'list-ul' },
@@ -135,8 +132,10 @@ const UserDashboard = () => {
       <SafeAreaView style={styles.safeArea}>
         <ScrollView contentContainerStyle={styles.scrollViewContent}>
           <View style={styles.header}>
-            <TouchableOpacity ref={headerProfileRef} collapsable={false} onPress={() => navigation.navigate('Profile')} >
-              <Feather name="user" size={24} color={Colors.primary} />
+            <TouchableOpacity onPress={() => navigation.navigate('Profile')} >
+              <View ref={headerProfileRef} collapsable={false} style={{ alignSelf: 'flex-start' }}>
+                <Feather name="user" size={24} color={Colors.primary} />
+              </View>
             </TouchableOpacity>
             <TouchableOpacity>
               <Feather name="mic" size={24} color={Colors.textMuted} />
@@ -174,12 +173,6 @@ const UserDashboard = () => {
                 <TouchableOpacity 
                   key={feature.id} 
                   style={styles.card}
-                  ref={
-                    feature.id === '1' ? featureCreateRef :
-                    feature.id === '2' ? featureSyncRef :
-                    feature.id === '3' ? featureMeetingsRef : undefined
-                  }
-                  collapsable={false}
                   onPress={feature.onPress || (() => {
                     if (feature.id === '1') {
                       navigation.navigate('CreateReminder');

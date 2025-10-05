@@ -30,6 +30,7 @@
         "INTERNET",
         "ACCESS_NETWORK_STATE",
         "FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "SCHEDULE_EXACT_ALARM",
         "ACCESS_FINE_LOCATION",

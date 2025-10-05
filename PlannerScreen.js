@@ -84,6 +84,25 @@ export default function PlannerScreen({ navigation }) {
     }
   };
 
+  // Compute the next occurrence for a routine task (returns ISO string or null)
+  const computeNextRoutineISO = (r) => {
+    try {
+      const fixed = r?.scheduleTime?.fixedTime || null; // 'HH:MM'
+      if (!fixed) return null;
+      const [hh, mm] = String(fixed).split(':').map(x => parseInt(x,10));
+      const days = Array.isArray(r?.scheduleDays) ? r.scheduleDays : [];
+      const now = new Date();
+      for (let i = 0; i < 14; i++) {
+        const d = new Date(now);
+        d.setDate(d.getDate() + i);
+        d.setHours(isNaN(hh)?9:hh, isNaN(mm)?0:mm, 0, 0);
+        const ok = days.length === 0 || days.includes(d.getDay());
+        if (ok && d.getTime() > now.getTime()) return d.toISOString();
+      }
+      return null;
+    } catch { return null; }
+  };
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -107,16 +126,20 @@ export default function PlannerScreen({ navigation }) {
           const allRem = rem?.data || [];
           calData = {
             events: [],
-            tasks: allRem.filter(r => r.type === 'Task').map(r => ({
-              id: r._id,
-              title: r.title,
-              description: r.description,
-              startTime: r.startDate,
-              endTime: r.endDate || r.startDate,
-              isCompleted: !!r.isCompleted,
-              status: r.isCompleted ? 'completed' : 'pending',
-              aiSuggested: !!r.aiSuggested,
-            })),
+            tasks: allRem.filter(r => r.type === 'Task').map(r => {
+              const routine = r.scheduleType === 'routine' && r.isManualSchedule;
+              const nextISO = routine ? computeNextRoutineISO(r) : (r.startDate || null);
+              return ({
+                id: r._id,
+                title: r.title,
+                description: r.description,
+                startTime: nextISO,
+                endTime: r.endDate || nextISO,
+                isCompleted: !!r.isCompleted,
+                status: r.isCompleted ? 'completed' : 'pending',
+                aiSuggested: !!r.aiSuggested,
+              });
+            }),
             meetings: allRem.filter(r => r.type === 'Meeting').map(r => ({
               id: r._id,
               title: r.title,
@@ -155,7 +178,19 @@ export default function PlannerScreen({ navigation }) {
       });
       setEvents(normalizedEvents);
       setMeetings(calData.meetings || []);
-      setTasks(calData.tasks || []);
+      // Ensure routine tasks have a startTime computed for planner visibility
+      const normalizedTasks = (calData.tasks || []).map(t => {
+        try {
+          const routine = (t.isManualSchedule && t.scheduleType === 'routine') || false;
+          const nextISO = routine ? computeNextRoutineISO(t) : (t.startTime || t.startDate || null);
+          return {
+            ...t,
+            startTime: nextISO,
+            endTime: t.endTime || nextISO,
+          };
+        } catch { return t; }
+      });
+      setTasks(normalizedTasks);
 
       // Locations: fetch reminders filtered by type
       try {

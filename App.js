@@ -95,7 +95,7 @@ export default function App() {
     };
     const appStateSub = AppState.addEventListener('change', handleAppState);
 
-    // Lightweight periodic reschedule (every 15 minutes) while logged in
+    // Lightweight periodic reschedule (every 2 minutes) while logged in
     let intervalId;
     (async () => {
       try {
@@ -106,7 +106,7 @@ export default function App() {
               const t = await AsyncStorage.getItem('userToken');
               if (t) await rescheduleAllTimeBasedReminders();
             } catch {}
-          }, 15 * 60 * 1000);
+          }, 2 * 60 * 1000);
         }
       } catch {}
     })();

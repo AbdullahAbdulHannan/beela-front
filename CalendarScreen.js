@@ -17,6 +17,7 @@ import { Platform, Alert } from 'react-native';
 import { scheduleReminderSpeechNotification } from './services/notificationService';
 import { ensureReminderTTS } from './services/api';
 import { Colors } from './constants/colors';
+import { useOnboardingTarget } from './components/OnboardingProvider';
 
 const CalendarScreen = ({ navigation }) => {
     const API_BASE_URL= 'https://voxa-backend-three.vercel.app'
@@ -27,6 +28,7 @@ const CalendarScreen = ({ navigation }) => {
   const [error, setError] = useState(null);
   const [lastSynced, setLastSynced] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const calSyncRef = useOnboardingTarget('cal-sync');
 
   const openEventLink = async (url) => {
     try {
@@ -359,11 +361,13 @@ const CalendarScreen = ({ navigation }) => {
     onPress={handleGoogleCalendarSync}
     disabled={isSyncing}
   >
-    {isSyncing ? (
-      <ActivityIndicator color={Colors.white} size="small" />
-    ) : (
-      <FontAwesome5 name="sync" size={20} color={Colors.white} />
-    )}
+    <View ref={calSyncRef} collapsable={false} style={{ alignSelf: 'center' }}>
+      {isSyncing ? (
+        <ActivityIndicator color={Colors.white} size="small" />
+      ) : (
+        <FontAwesome5 name="sync" size={20} color={Colors.white} />
+      )}
+    </View>
   </TouchableOpacity>
 </View>
 

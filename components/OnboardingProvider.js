@@ -21,14 +21,17 @@ export function OnboardingProvider({ navigationRef, children }) {
   const [visible, setVisible] = useState(false);
   const [steps, setSteps] = useState([]);
   const [index, setIndex] = useState(0);
+  const [registryVersion, setRegistryVersion] = useState(0);
 
   const register = useCallback((key, ref) => {
     if (!key) return () => {};
     registryRef.current.set(key, ref);
+    setRegistryVersion(v => v + 1);
     return () => {
       // unregister on unmount
       if (registryRef.current.get(key) === ref) {
         registryRef.current.delete(key);
+        setRegistryVersion(v => v + 1);
       }
     };
   }, []);
@@ -99,7 +102,7 @@ export function OnboardingProvider({ navigationRef, children }) {
       radius: s.radius,
       padding: s.padding,
     }));
-  }, [visible, steps, getRefForKey]);
+  }, [visible, steps, getRefForKey, registryVersion, index]);
 
   return (
     <OnboardingCtx.Provider value={value}>

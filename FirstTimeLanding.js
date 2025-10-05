@@ -4,11 +4,11 @@ import { useNavigation } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { Audio } from "expo-av";
-import * as Speech from "expo-speech";
+// Removed Speech fallback to ensure we only use ElevenLabs as requested
 import { Buffer } from "buffer";
 import { useOnboarding } from "./components/OnboardingProvider";
 
-const ELEVENLABS_API_KEY = "sk_1bce29baca77234dd24965c62c904c1d3047c50ec7d9a839";
+const ELEVENLABS_API_KEY = "sk_9445fc2abf247b5ce06e575ec327225ea0cf46a42017ba88";
 const ELEVENLABS_VOICE_ID =
   process.env.EXPO_PUBLIC_ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
 
@@ -85,14 +85,9 @@ export default function FirstTimeLanding() {
     })();
   }, []);
 
-  // Play welcome TTS, show loader until audio starts or fallback timeout
+  // Play welcome TTS, show loader until audio starts; no Speech fallback
   useEffect(() => {
     let mounted = true;
-    const fallbackTimer = setTimeout(() => {
-      if (!mounted) return;
-      setIsLoading(false);
-      setShowRobot(true);
-    }, 6000);
 
     const play = async () => {
       try {
@@ -126,58 +121,15 @@ export default function FirstTimeLanding() {
 
           await sound.playAsync();
         } else {
-          // Fallback to on-device TTS
-          const text = `Hey ${firstName}, welcome to Beela AI!`;
-          setIsLoading(false);
-          setIsSpeaking(true);
-          Speech.speak(text, {
-            rate: 0.95,
-            pitch: 1.0,
-            onDone: () => {
-              setIsSpeaking(false);
-              setShowRobot(true);
-            },
-            onStopped: () => {
-              setIsSpeaking(false);
-              setShowRobot(true);
-            },
-            onError: () => {
-              setIsSpeaking(false);
-              setShowRobot(true);
-            },
-          });
-        }
-      } catch (err) {
-        console.log("Audio error:", err);
-        // As a last resort, still attempt on-device TTS once
-        try {
-          const rawUser = await AsyncStorage.getItem("user");
-          const user = rawUser ? JSON.parse(rawUser) : null;
-          const fullName = user?.name || user?.fullname || "there";
-          const firstName = String(fullName).trim().split(/\s+/)[0] || "there";
-          const text = `Hey ${firstName}, welcome to Beela AI!`;
-          setIsLoading(false);
-          setIsSpeaking(true);
-          Speech.speak(text, {
-            rate: 0.95,
-            pitch: 1.0,
-            onDone: () => {
-              setIsSpeaking(false);
-              setShowRobot(true);
-            },
-            onStopped: () => {
-              setIsSpeaking(false);
-              setShowRobot(true);
-            },
-            onError: () => {
-              setIsSpeaking(false);
-              setShowRobot(true);
-            },
-          });
-        } catch {
+          // If ElevenLabs audio is unavailable, skip voice and show robot
           setIsLoading(false);
           setShowRobot(true);
         }
+      } catch (err) {
+        console.log("Audio error:", err);
+        // On error, do not fallback to Speech; end gracefully
+        setIsLoading(false);
+        setShowRobot(true);
       }
     };
 
@@ -190,7 +142,6 @@ export default function FirstTimeLanding() {
 
     return () => {
       mounted = false;
-      clearTimeout(fallbackTimer);
       if (soundRef.current) {
         soundRef.current.stopAsync().catch(() => {});
         soundRef.current.unloadAsync().catch(() => {});
@@ -203,14 +154,20 @@ export default function FirstTimeLanding() {
     try { await AsyncStorage.setItem(onboardingKey, "true"); } catch {}
     setTourCompleted(true);
     const steps = [
-      { navigateTo: { route: 'Dashboard' }, key: 'feature-create', title: 'Create Reminders', text: 'Quickly add tasks and reminders from here.', radius: 16, padding: 10 },
-      { key: 'feature-sync', title: 'Google Calendar', text: 'Connect your calendar to sync events automatically.' },
-      { key: 'feature-meetings', title: 'Meetings & Events', text: 'See upcoming meetings and plan with AI assistance.' },
-      { key: 'fab-add', title: 'Add New', text: 'Tap the plus button anytime to create a new reminder.', radius: 35, padding: 8 },
-      { key: 'nav-planner', title: 'Planner', text: 'Access your planner to organize tasks by day and priority.' },
-      { key: 'nav-calendar', title: 'Calendar', text: 'View your schedule at a glance in the calendar.' },
-      { key: 'nav-notifications', title: 'Notifications', text: 'Manage reminders and notification settings here.' },
-      { key: 'header-profile', title: 'Profile', text: 'Manage your profile and voice preferences from here.' },
+      // Dashboard highlights: Profile + Navbar only
+      { navigateTo: { route: 'Dashboard' }, key: 'header-profile', title: 'Profile', text: 'Manage your profile and voice preferences from here.' },
+      { key: 'fab-add', title: 'Quick Add', text: 'Use the plus button to quickly create a new reminder.', radius: 35, padding: 8 },
+      { key: 'nav-planner', title: 'Planner', text: 'Organize your tasks by day and priority.' },
+      { key: 'nav-calendar', title: 'Calendar', text: 'See your schedule at a glance.' },
+      { key: 'nav-notifications', title: 'Notifications', text: 'Manage reminder and notification settings.' },
+
+      // Create Reminder: highlight radios
+      { navigateTo: { route: 'CreateReminder' }, key: 'cr-task', title: 'Task', text: 'Create a Task reminder you can schedule or let AI handle.' },
+      { key: 'cr-meeting', title: 'Meeting', text: 'Set a Meeting with a start time and get notified beforehand.' },
+      { key: 'cr-location', title: 'Location', text: 'Trigger reminders when you arrive near a saved place.' },
+
+      // Calendar: sync button is the final step
+      { navigateTo: { route: 'Calendar' }, key: 'cal-sync', title: 'Sync Calendar', text: 'Connect Google Calendar to import your events automatically.' },
     ];
     onboarding?.start?.(steps);
   };
@@ -226,17 +183,16 @@ export default function FirstTimeLanding() {
         </View>
       )}
 
-      {isSpeaking && (
+      {/* Single image element to prevent any flicker between states */}
+      {!isLoading && (
         <Image
-          source={require("./assets/beela-ai.gif")}
-          style={styles.gif}
-          resizeMode="contain"
-        />
-      )}
-
-      {showRobot && !isSpeaking && (
-        <Image
-          source={require("./assets/robot.gif")}
+          source={
+            isSpeaking
+              ? require("./assets/beela-ai.gif")
+              : showRobot
+              ? require("./assets/robot.mp4")
+              : require("./assets/beela-ai.gif")
+          }
           style={styles.gif}
           resizeMode="contain"
         />
