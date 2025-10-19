@@ -12,7 +12,6 @@ import {
   Image,
   Modal,
   TouchableWithoutFeedback,
-  Alert,
   ActivityIndicator
 } from 'react-native';
 import { Feather, FontAwesome5, AntDesign, Fontisto } from '@expo/vector-icons';
@@ -24,6 +23,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { scheduleReminderSpeechNotification } from './services/notificationService';
 import { Colors } from './constants/colors';
 import { useOnboardingTarget } from './components/OnboardingProvider';
+import SuccessModal from './components/MessageModal';
 
 const starIcon = require('./assets/star_icon.png'); 
 
@@ -32,12 +32,10 @@ const ICONS = [
   { name: 'star', component: 'Feather' },
   { name: 'calendar', component: 'Feather' },
   { name: 'map-pin', component: 'Feather' },
-  { name: 'bell', component: 'Feather' },
   { name: 'phone', component: 'Feather' },
   { name: 'mail', component: 'Feather' },
   { name: 'home', component: 'Feather' },
   { name: 'briefcase', component: 'Feather' },
-  { name: 'heart', component: 'Feather' },
   { name: 'shopping-bag', component: 'Feather' },
   { name: 'coffee', component: 'Feather' },
   { name: 'gift', component: 'Feather' },
@@ -90,6 +88,9 @@ const extractCoordsFromUrl = (url) => {
 const CreateReminder = ({ route }) => {
   const navigation = useNavigation();
   const [isLoading, setIsLoading] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [modalMessage, setModalMessage] = useState('');
+  const [modalOnClose, setModalOnClose] = useState(null);
   const [selectedType, setSelectedType] = useState(route.params?.type || 'Task');
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [selectedIcon, setSelectedIcon] = useState('star'); 
@@ -174,11 +175,11 @@ const CreateReminder = ({ route }) => {
   const getPlaceholderText = () => {
     switch(selectedType) {
       case 'Meeting':
-        return 'Meeting Title';
+        return 'Title';
       case 'Location':
-        return 'Title (e.g., Gift, Bulb)';
+        return 'Title';
       default:
-        return 'What do you want to be reminded about?';
+        return 'Title';
     }
   };
 
@@ -300,14 +301,14 @@ const CreateReminder = ({ route }) => {
   const renderDateTimeInputs = () => (
     <View>
       <TouchableOpacity style={styles.inputContainer} onPress={() => showDateTimePicker('start')}>
-        <Feather name="clock" size={20} color={Colors.btnText} />
+        <Feather name="clock" size={20} color="#777" />
         <View style={styles.dateTimeInput}>
           <Text style={styles.dateTimeLabel}>Starts</Text>
           <Text style={styles.dateTimeText}>
             {formatDate(startDate)} • {formatTime(startDate)}
           </Text>
         </View>
-        <Feather name="chevron-right" size={20} color={Colors.btnText} />
+        <Feather name="chevron-right" size={20} color="#777" />
       </TouchableOpacity>
     </View>
   );
@@ -316,33 +317,33 @@ const CreateReminder = ({ route }) => {
     <View>
       {/* Title */}
       <View style={styles.inputContainer}>
-        <Feather name="edit-2" size={20} color={Colors.btnText} />
+        <Feather name="edit-2" size={20} color="#777" />
         <TextInput
           style={styles.input}
-          placeholder="Title (e.g., Gift, Bulb)"
-          placeholderTextColor={Colors.btnText}
+          placeholder="Title"
+          placeholderTextColor="#999"
           value={locationTitle}
           onChangeText={setLocationTitle}
-          selectionColor={Colors.btnText}
+          selectionColor="#333"
         />
       </View>
       {/* Description */}
       <View style={styles.inputContainer}>
-        <Feather name="file-text" size={20} color={Colors.btnText} />
+        <Feather name="file-text" size={20} color="#777" />
         <TextInput
           style={[styles.input, { minHeight: 50 }]}
           placeholder="Description (optional)"
-          placeholderTextColor={Colors.btnText}
+          placeholderTextColor="#999"
           multiline
           value={locationDescription}
           onChangeText={setLocationDescription}
-          selectionColor={Colors.btnText}
+          selectionColor="#333"
         />
       </View>
       {/* Days (like Tasks): Daily + S M T W T F S */}
       <View style={{ marginTop: 6 }}>
         <View style={styles.inputContainer}>
-          <Feather name="calendar" size={20} color={Colors.btnText} />
+          <Feather name="calendar" size={20} color="#777" />
           <Text style={[styles.input, { color: Colors.btnText }]}>Days</Text>
         </View>
         <TouchableOpacity style={styles.checkboxRow} onPress={() => {
@@ -386,15 +387,17 @@ const CreateReminder = ({ route }) => {
       if (selectedType === 'Task' || selectedType === 'Meeting') {
         const titleText = (note || '').trim();
         if (!titleText) {
-          Alert.alert('Missing Title', `${selectedType} title is required.`);
           setIsLoading(false);
+          setModalMessage(`${selectedType} title is required.`);
+          setModalVisible(true);
           return;
         }
       }
       // Validate Meeting start date
       if (selectedType === 'Meeting' && !(startDate instanceof Date)) {
-        Alert.alert('Missing Start', 'Meeting start date/time is required.');
         setIsLoading(false);
+        setModalMessage('Meeting start date/time is required.');
+        setModalVisible(true);
         return;
       }
       // Format start date to ISO string
@@ -402,8 +405,9 @@ const CreateReminder = ({ route }) => {
       
       // Basic validation for Location reminders
       if (selectedType === 'Location' && !String(locationTitle).trim()) {
-        Alert.alert('Missing Title', 'Please enter a title for the location reminder');
         setIsLoading(false);
+        setModalMessage('Please enter a title for the location reminder');
+        setModalVisible(true);
         return;
       }
 
@@ -529,8 +533,9 @@ const CreateReminder = ({ route }) => {
             console.warn('Background create failed', e?.message);
           }
         })();
-        Alert.alert('Success', 'Reminder saved!');
-        navigation.goBack();
+        setModalMessage('Reminder saved!');
+        setModalOnClose(() => () => navigation.goBack());
+        setModalVisible(true);
         setIsLoading(false);
         return; // exit early
       }
@@ -538,17 +543,20 @@ const CreateReminder = ({ route }) => {
       if (response.success) {
         // For Location type, no geofencing; background scanning will handle triggers
         // Success; Gemini and TTS continue in background
-        Alert.alert('Success', editingId ? 'Reminder updated successfully!' : 'Reminder saved!');
-        navigation.goBack();
+        setModalMessage(editingId ? 'Reminder updated successfully!' : 'Reminder saved!');
+        setModalOnClose(() => () => navigation.goBack());
+        setModalVisible(true);
       } else {
-        Alert.alert('Error', response.message || 'Failed to save reminder');
+        setModalMessage(response.message || 'Failed to save reminder');
+        setModalVisible(true);
       }
     } catch (error) {
       console.error('Error saving reminder:', error);
       const errorMessage = error.response?.data?.message || error.message || 'An error occurred while saving the reminder';
       console.error('Full error details:', error.response?.data);
       // On create we already returned; this path is mainly for edit
-      Alert.alert('Error', errorMessage);
+      setModalMessage(errorMessage);
+      setModalVisible(true);
     } finally {
       setIsLoading(false);
     }
@@ -638,7 +646,7 @@ const CreateReminder = ({ route }) => {
                     <View>
                       {renderDateTimeInputs()}
                       <View style={styles.inputContainer}>
-                        <Feather name="bell" size={20} color={Colors.btnText} />
+                        <Feather name="bell" size={20} color="#777" />
                         <TextInput
                           style={styles.input}
                           keyboardType="numeric"
@@ -646,8 +654,8 @@ const CreateReminder = ({ route }) => {
                           onChangeText={(t)=>{
                             const n = parseInt(t||'10',10); setMinutesBeforeStart(isNaN(n)?10:n);
                           }}
-                          placeholder="Remind me minutes before start"
-                          placeholderTextColor={Colors.btnText}
+                          placeholder="Minutes"
+                          placeholderTextColor="#999"
                         />
                         
                       </View>
@@ -669,7 +677,7 @@ const CreateReminder = ({ route }) => {
                           setShowRoutineTimePicker(true);
                         }}
                       >
-                        <Feather name="clock" size={20} color={Colors.btnText} />
+                        <Feather name="clock" size={20} color="#777" />
                         <Text style={styles.input}>
                           {fixedTime || 'Fixed time (tap to select)'}
                         </Text>
@@ -701,14 +709,14 @@ const CreateReminder = ({ route }) => {
               <Text style={styles.sectionTitle}>Meeting Details</Text>
               {renderDateTimeInputs()}
               <View style={styles.inputContainer}>
-                <Feather name="bell" size={20} color={Colors.btnText} />
+                <Feather name="bell" size={20} color="#777" />
                 <TextInput
                   style={styles.input}
                   keyboardType="numeric"
                   value={String(notificationMinutes)}
                   onChangeText={(t)=> setNotificationMinutes(t.replace(/[^0-9]/g, ''))}
-                  placeholder="Notification minutes before start (default 10)"
-                  placeholderTextColor={Colors.btnText}
+                  placeholder="Minutes"
+                  placeholderTextColor="#999"
                 />
               </View>
               {notificationMinutes !== '' && (
@@ -725,15 +733,15 @@ const CreateReminder = ({ route }) => {
           {/* Note Input (only for Task/Meeting) */}
           {selectedType !== 'Location' && (
             <View style={styles.inputContainer}>
-              <Feather name="edit-2" size={20} color={Colors.btnText} />
+              <Feather name="edit-2" size={20} color="#777" />
               <TextInput
                 style={[styles.input, {minHeight: 50}]}
                 placeholder={getPlaceholderText()}
-                placeholderTextColor={Colors.btnText}
+                placeholderTextColor="#999"
                 multiline
                 value={note}
                 onChangeText={setNote}
-                selectionColor={Colors.btnText}
+                selectionColor="#333"
               />
             </View>
           )}
@@ -758,86 +766,67 @@ const CreateReminder = ({ route }) => {
                   {renderIcon(icon)}
                 </TouchableOpacity>
               ))}
-            </ScrollView>
+            </ScrollView> 
+      </View> 
+      
+      {/* Date/Time Picker Modal */}
+      <Modal
+        visible={showDatePicker}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowDatePicker(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}>
+          <View style={styles.modalOverlay} />
+        </TouchableWithoutFeedback>
+        <View style={styles.modalContent}>
+          <View style={styles.pickerHeader}>
+            <Text style={styles.pickerTitle}>{mode === 'date' ? 'Select date' : 'Select time'}</Text>
+            <TouchableOpacity onPress={() => setShowDatePicker(false)} style={styles.closeButton}>
+              <Feather name="x" size={20} color={Colors.text} />
+            </TouchableOpacity>
           </View>
-          {/* Date/Time Picker Modal */} 
-          <Modal 
-            visible={showDatePicker} 
-            transparent={true} 
-            animationType="slide" 
-            onRequestClose={() => setShowDatePicker(false)} 
-          > 
-            <TouchableWithoutFeedback onPress={() => setShowDatePicker(false)}> 
-              <View style={styles.modalOverlay} /> 
-            </TouchableWithoutFeedback> 
-            <View style={styles.modalContent}> 
-             
-              <DateTimePicker 
-                value={tempDate} 
-                mode={mode} 
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'} 
-                onChange={onChange} 
-                minimumDate={new Date()} 
-                {...(Platform.OS === 'ios' ? { themeVariant: 'dark' } : {})} 
-              /> 
-          
-            </View> 
-          </Modal> 
-
-          {/* Routine Fixed Time Picker Modal */}
-          <Modal
-            visible={showRoutineTimePicker}
-            transparent={true}
-            animationType="slide"
-            onRequestClose={() => setShowRoutineTimePicker(false)}
-          >
-            <TouchableWithoutFeedback onPress={() => setShowRoutineTimePicker(false)}>
-              <View style={styles.modalOverlay} />
-            </TouchableWithoutFeedback>
-            <View style={styles.modalContent}>
-              <DateTimePicker
-                value={routineTempDate}
-                mode="time"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={(event, selected) => {
-                  const current = selected || routineTempDate;
-                  if (event.type === 'dismissed') { setShowRoutineTimePicker(false); return; }
-                  try {
-                    const hh = String(current.getHours()).padStart(2,'0');
-                    const mm = String(current.getMinutes()).padStart(2,'0');
-                    setFixedTime(`${hh}:${mm}`);
-                  } catch {}
-                  setShowRoutineTimePicker(false);
-                }}
-                {...(Platform.OS === 'ios' ? { themeVariant: 'dark' } : {})}
-              />
-            </View>
-          </Modal>
-          {/* Save Button */} 
-          <TouchableOpacity 
-            style={[styles.saveButton, isLoading && styles.saveButtonDisabled]}
-            onPress={handleSaveReminder}
-            disabled={isLoading}
-          >
-            {isLoading ? (
-              <ActivityIndicator color={Colors.black} />
-            ) : (
-              <Text style={styles.saveButtonText}>+ Save</Text>
-            )}
-          </TouchableOpacity> 
-        </ScrollView> 
-      </SafeAreaView> 
- 
-      <Navbar /> 
-    </View> 
-  ); 
-}; 
+          <DateTimePicker
+            value={tempDate}
+            mode={mode}
+            display="default"
+            onChange={onChange}
+          />
+          {mode === 'time' && (
+            <TouchableOpacity style={styles.continueButton} onPress={() => setShowDatePicker(false)}>
+              <Text style={styles.continueButtonText}>Done</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </Modal>
+        {/* Save button */}
+        <TouchableOpacity
+          style={[styles.saveButton, isLoading && styles.saveButtonDisabled]}
+          onPress={handleSaveReminder}
+          disabled={isLoading}
+        >
+          {isLoading ? (
+            <ActivityIndicator color={Colors.black} />
+          ) : (
+            <Text style={styles.saveButtonText}>Save</Text>
+          )}
+        </TouchableOpacity>
+        </ScrollView>
+      <Navbar />
+      <SuccessModal
+        visible={modalVisible}
+        message={modalMessage}
+        onClose={() => { setModalVisible(false); const fn = modalOnClose; setModalOnClose(null); if (typeof fn === 'function') fn(); }}
+      />
+    </SafeAreaView>
+  </View>
+  );
+}
  
 const styles = StyleSheet.create({ 
   container: { 
     flex: 1, 
     backgroundColor: Colors.background, 
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0, 
   }, 
   safeArea: { flex: 1 }, 
   scrollViewContent: { paddingBottom: 220, paddingHorizontal: 20 }, 
@@ -847,7 +836,6 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     paddingVertical: 25, 
     paddingTop: 35, 
-
   }, 
   headerTitle: { color: Colors.text, fontSize: 18, fontWeight: 'bold' }, 
   reminderTypeContainer: { 
@@ -869,22 +857,35 @@ const styles = StyleSheet.create({
   inputContainer: { 
     flexDirection: 'row', 
     alignItems: 'center', 
-    backgroundColor: Colors.primary, 
-    borderRadius: 12, 
-    paddingHorizontal: 15, 
-    paddingVertical: 12, 
+    backgroundColor: '#FFF', 
+    borderRadius: 15, 
+    height: 55, 
     marginBottom: 15, 
+    paddingHorizontal: 15, 
+    borderWidth: 1, 
+    borderColor: '#E5E7EB', 
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.08,
+        shadowRadius: 10,
+      },
+      android: {
+        elevation: 8,
+      },
+    }),
   }, 
   input: { 
-    color: Colors.btnText, 
+    color: '#333', 
     flex: 1, 
-    fontSize: 15, 
+    fontSize: 16, 
     paddingLeft: 10, 
   }, 
  
   dateTimeInput: { flex: 1, marginLeft: 10 }, 
-  dateTimeLabel: { color: Colors.btnText, fontSize: 12, marginBottom: 2 }, 
-  dateTimeText: { color: Colors.btnText, fontSize: 16 }, 
+  dateTimeLabel: { color: '#999', fontSize: 12, marginBottom: 2 }, 
+  dateTimeText: { color: '#333', fontSize: 16 }, 
  
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.5)' }, 
   modalContent: { 

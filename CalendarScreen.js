@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -13,14 +13,15 @@ import * as WebBrowser from 'expo-web-browser';
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
 import Navbar from './components/Navbar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform, Alert } from 'react-native';
+import { Platform } from 'react-native';
+import SuccessModal from './components/MessageModal';
 import { scheduleReminderSpeechNotification } from './services/notificationService';
 import { ensureReminderTTS } from './services/api';
 import { Colors } from './constants/colors';
 import { useOnboardingTarget } from './components/OnboardingProvider';
 
 const CalendarScreen = ({ navigation }) => {
-    const API_BASE_URL= 'https://voxa-backend-three.vercel.app'
+    const API_BASE_URL= process.env.EXPO_PUBLIC_API_URL||'https://voxa-backend-three.vercel.app/api'
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [events, setEvents] = useState([]);
@@ -28,6 +29,21 @@ const CalendarScreen = ({ navigation }) => {
   const [error, setError] = useState(null);
   const [lastSynced, setLastSynced] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [modalMessage, setModalMessage] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const scrollRef = useRef(null);
+  const monthNames = useMemo(() => [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ], []);
+  useEffect(() => {
+    if (pickerOpen && scrollRef.current) {
+      const m = currentDate.getMonth();
+      const offset = (m * 40) - (40 * 2);
+      scrollRef.current.scrollTo({ y: Math.max(0, offset), animated: true });
+    }
+  }, [pickerOpen, currentDate]);
   const calSyncRef = useOnboardingTarget('cal-sync');
 
   const openEventLink = async (url) => {
@@ -67,7 +83,7 @@ const CalendarScreen = ({ navigation }) => {
       setLoading(true);
       const token = await AsyncStorage.getItem('userToken');
       
-      const response = await fetch(`${API_BASE_URL}/api/calendar/events`, {
+      const response = await fetch(`${API_BASE_URL}/calendar/events`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -201,10 +217,6 @@ const CalendarScreen = ({ navigation }) => {
   };
 
   const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const monthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
-  ];
 
   const getDaysInMonth = (year, month) => {
     return new Date(year, month + 1, 0).getDate();
@@ -290,7 +302,7 @@ const CalendarScreen = ({ navigation }) => {
       setIsSyncing(true);
       
       // Get the auth URL from the backend
-      const response = await fetch(`${API_BASE_URL}/api/auth/calendar`, {
+      const response = await fetch(`${API_BASE_URL}/auth/calendar`, {
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
@@ -318,12 +330,13 @@ const CalendarScreen = ({ navigation }) => {
       // After closing/dismissing, verify sync with backend instead of assuming success
       try {
         const verifyToken = await AsyncStorage.getItem('userToken');
-        const verifyResp = await fetch(`${API_BASE_URL}/api/calendar/events`, {
+        const verifyResp = await fetch(`${API_BASE_URL}/calendar/events`, {
           headers: { 'Authorization': `Bearer ${verifyToken}` }
         });
         if (verifyResp.ok) {
           // Now it is actually synced
-          Alert.alert('Success', 'Google Calendar has been successfully synced!');
+          setModalMessage('Google Calendar has been successfully synced!');
+          setModalVisible(true);
           const data = await verifyResp.json();
           setLastSynced(data?.data?.lastSynced || new Date().toISOString());
           // Refresh events after sync
@@ -338,7 +351,8 @@ const CalendarScreen = ({ navigation }) => {
       }
     } catch (error) {
       console.error('Error syncing Google Calendar:', error);
-      Alert.alert('Error', error.message || 'Failed to sync Google Calendar');
+      setModalMessage(error.message || 'Failed to sync Google Calendar');
+      setModalVisible(true);
     } finally {
       setIsSyncing(false);
     }
@@ -367,7 +381,7 @@ const CalendarScreen = ({ navigation }) => {
       ) : (
         <FontAwesome5 name="sync" size={20} color={Colors.white} />
       )}
-    </View>
+    </View> 
   </TouchableOpacity>
 </View>
 
@@ -377,14 +391,56 @@ const CalendarScreen = ({ navigation }) => {
               <Feather name="chevron-left" size={20} color={Colors.primary} />
             </TouchableOpacity>
             
-            <Text style={styles.monthText}>
-              {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()}
-            </Text>
+            <TouchableOpacity onPress={() => setPickerOpen(!pickerOpen)}>
+              <Text style={styles.monthText}>
+                {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()}
+              </Text>
+            </TouchableOpacity>
             
             <TouchableOpacity onPress={() => changeMonth(1)} style={styles.arrowButton}>
               <Feather name="chevron-right" size={20} color={Colors.primary} />
             </TouchableOpacity>
           </View>
+          {pickerOpen && (
+            <View style={styles.dropdownContainer}>
+              <ScrollView ref={scrollRef} style={{ maxHeight: 200 }}>
+                {monthNames.map((name, idx) => (
+                  <TouchableOpacity
+                    key={name}
+                    style={[styles.dropdownItem, idx === currentDate.getMonth() && styles.dropdownItemActive]}
+                    onPress={() => {
+                      const d = new Date(currentDate);
+                      d.setMonth(idx);
+                      setCurrentDate(d);
+                      setSelectedDate(new Date(d.getFullYear(), d.getMonth(), Math.min(selectedDate.getDate(), getDaysInMonth(d.getFullYear(), d.getMonth()))));
+                      setPickerOpen(false);
+                    }}
+                  >
+                    <Text style={[styles.dropdownItemText, idx === currentDate.getMonth() && styles.dropdownItemTextActive]}>{name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <View style={styles.yearRow}>
+                <TouchableOpacity onPress={() => {
+                  const d = new Date(currentDate);
+                  d.setFullYear(d.getFullYear() - 1);
+                  setCurrentDate(d);
+                  setSelectedDate(new Date(d.getFullYear(), d.getMonth(), Math.min(selectedDate.getDate(), getDaysInMonth(d.getFullYear(), d.getMonth()))));
+                }} style={styles.yearBtn}>
+                  <Feather name="chevron-left" size={18} color={Colors.text} />
+                </TouchableOpacity>
+                <Text style={styles.yearText}>{currentDate.getFullYear()}</Text>
+                <TouchableOpacity onPress={() => {
+                  const d = new Date(currentDate);
+                  d.setFullYear(d.getFullYear() + 1);
+                  setCurrentDate(d);
+                  setSelectedDate(new Date(d.getFullYear(), d.getMonth(), Math.min(selectedDate.getDate(), getDaysInMonth(d.getFullYear(), d.getMonth()))));
+                }} style={styles.yearBtn}>
+                  <Feather name="chevron-right" size={18} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
           
           <View style={styles.weekDaysContainer}>
             {days.map((day) => (
@@ -420,13 +476,13 @@ const CalendarScreen = ({ navigation }) => {
             </View>
           ) : error ? (
             <View style={styles.errorContainer}>
-              <Text style={styles.errorText}>{error}</Text>
-              <TouchableOpacity 
+              <Text style={styles.loadingText}>Calendar not synced...</Text>
+              {/* <TouchableOpacity 
                 style={styles.retryButton}
                 onPress={fetchCalendarEvents}
               >
                 <Text style={styles.retryButtonText}>Retry</Text>
-              </TouchableOpacity>
+              </TouchableOpacity> */}
             </View>
           ) : getItemsForSelectedDate(events).length > 0 ? (
             getItemsForSelectedDate(events).map((event) => (
@@ -461,6 +517,11 @@ const CalendarScreen = ({ navigation }) => {
         </ScrollView>
       </View>
       <Navbar />
+      <SuccessModal
+        visible={modalVisible}
+        message={modalMessage}
+        onClose={() => setModalVisible(false)}
+      />
     </SafeAreaView>
   );
 };
@@ -514,17 +575,102 @@ headerTitle: {
     fontSize: 18,
     fontWeight: '600',
   },
-  // weekDaysContainer: {
-  //   flexDirection: 'row',
-  //   justifyContent: 'space-between',
-  //   marginBottom: 12,
-  // },
-  // weekDayText: {
-  //   color: '#666',
-  //   fontSize: 14,
-  //   width: 40,
-  //   textAlign: 'center',
-  // },
+  monthSelector: {
+  flexDirection: 'row',
+  justifyContent: 'center',
+  alignItems: 'center',
+  marginBottom: 16,
+  backgroundColor: Colors.primary,
+  borderRadius: 12,
+  paddingVertical: 10,
+  paddingHorizontal: 14,
+  shadowColor: '#000',
+  shadowOffset: { width: 0, height: 2 },
+  shadowOpacity: 0.1,
+  shadowRadius: 3,
+  elevation: 3,
+},
+
+arrowButton: {
+  padding: 10,
+  backgroundColor: Colors.white,
+  borderRadius: 8,
+  shadowColor: '#000',
+  shadowOffset: { width: 0, height: 1 },
+  shadowOpacity: 0.1,
+  shadowRadius: 2,
+  elevation: 2,
+},
+
+monthText: {
+  color: Colors.white,
+  fontSize: 18,
+  fontWeight: '700',
+  marginHorizontal: 12,
+  textAlign: 'center',
+  letterSpacing: 0.5,
+},
+
+dropdownContainer: {
+  backgroundColor: Colors.surface,
+  borderRadius: 12,
+  marginTop: 8,
+  paddingVertical: 10,
+  shadowColor: '#000',
+  shadowOffset: { width: 0, height: 2 },
+  shadowOpacity: 0.15,
+  shadowRadius: 3,
+  elevation: 3,
+  borderWidth: 1,
+  borderColor: '#e5e7eb',
+},
+
+dropdownItem: {
+  paddingVertical: 10,
+  paddingHorizontal: 16,
+  borderBottomWidth: 1,
+  borderBottomColor: '#f0f0f0',
+},
+
+dropdownItemActive: {
+  backgroundColor: Colors.primary + '15', // subtle tint
+  borderRadius: 8,
+},
+
+dropdownItemText: {
+  fontSize: 16,
+  color: Colors.text,
+},
+
+dropdownItemTextActive: {
+  color: Colors.primary,
+  fontWeight: '700',
+},
+
+yearRow: {
+  flexDirection: 'row',
+  justifyContent: 'center',
+  alignItems: 'center',
+  paddingVertical: 10,
+  backgroundColor: Colors.surface,
+  borderTopWidth: 1,
+  borderTopColor: '#f0f0f0',
+  borderRadius: 12,
+},
+
+yearBtn: {
+  padding: 8,
+  marginHorizontal: 12,
+  backgroundColor: Colors.primary,
+  borderRadius: 8,
+},
+
+yearText: {
+  fontSize: 18,
+  fontWeight: '700',
+  color: Colors.text,
+},
+
 calendarGrid: {
   flexDirection: 'row',
   flexWrap: 'wrap',

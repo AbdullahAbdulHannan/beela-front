@@ -22,6 +22,7 @@ export function OnboardingProvider({ navigationRef, children }) {
   const [steps, setSteps] = useState([]);
   const [index, setIndex] = useState(0);
   const [registryVersion, setRegistryVersion] = useState(0);
+  const rootRef = useRef(null); // Stable root container for relative measurements
 
   const register = useCallback((key, ref) => {
     if (!key) return () => {};
@@ -106,7 +107,7 @@ export function OnboardingProvider({ navigationRef, children }) {
 
   return (
     <OnboardingCtx.Provider value={value}>
-      <View style={styles.container}>
+      <View ref={rootRef} collapsable={false} style={styles.container}>
         {children}
         <OnboardingTour
           visible={visible}
@@ -115,6 +116,7 @@ export function OnboardingProvider({ navigationRef, children }) {
           onNext={next}
           onClose={stop}
           onComplete={stop}
+          rootRef={rootRef}
         />
       </View>
     </OnboardingCtx.Provider>

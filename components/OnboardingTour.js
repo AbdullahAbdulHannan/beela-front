@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Dimensions, Pressable, Animated } from 'react-native';
+import { View, Text, StyleSheet, Dimensions, Pressable, Animated, findNodeHandle, UIManager } from 'react-native';
 import Svg, { Rect, Mask } from 'react-native-svg';
 
 /**
@@ -15,9 +15,11 @@ export default function OnboardingTour({
   nextLabel = 'Next',
   skipLabel = 'Skip',
   backdropOpacity = 0.6,
+  rootRef,
 }) {
   const [target, setTarget] = useState({ x: 0, y: 0, width: 0, height: 0, radius: 12 });
   const [ready, setReady] = useState(false);
+  const [layoutTick, setLayoutTick] = useState(0);
 
   const opacityAnim = useRef(new Animated.Value(0)).current;
   const xAnim = useRef(new Animated.Value(0)).current;
@@ -30,19 +32,49 @@ export default function OnboardingTour({
 
   const measureWithRetry = (node, attempt = 0) =>
     new Promise((resolve) => {
-      if (!node || !node.measureInWindow) return resolve(null);
-      node.measureInWindow((x, y, width, height) => {
-        const valid = width > 1 && height > 1;
-        if (valid) return resolve({ x, y, width, height });
-        if (attempt < 8) {
-          setTimeout(async () => {
-            const res = await measureWithRetry(node, attempt + 1);
-            resolve(res);
-          }, 50);
-        } else {
-          resolve({ x, y, width, height });
+      if (!node) return resolve(null);
+      const doResolve = (res) => resolve(res);
+
+      const measureRelative = () => {
+        try {
+          const rootNode = rootRef?.current;
+          const rootHandle = rootNode ? findNodeHandle(rootNode) : null;
+          const targetHandle = findNodeHandle(node);
+          if (targetHandle && rootHandle && UIManager?.measureLayout) {
+            UIManager.measureLayout(
+              targetHandle,
+              rootHandle,
+              () => doResolve(null),
+              (x, y, width, height) => doResolve({ x, y, width, height })
+            );
+            return;
+          }
+        } catch {}
+        // Fallback: measure in window and translate to root
+        if (node.measureInWindow) {
+          node.measureInWindow(async (x, y, width, height) => {
+            let rx = 0, ry = 0;
+            try {
+              const rnode = rootRef?.current;
+              if (rnode && rnode.measureInWindow) {
+                await new Promise((r) => rnode.measureInWindow((rx0, ry0) => { rx = rx0 || 0; ry = ry0 || 0; r(); }));
+              }
+            } catch {}
+            doResolve({ x: x - rx, y: y - ry, width, height });
+          });
+          return;
         }
-      });
+        doResolve(null);
+      };
+
+      measureRelative();
+    }).then((result) => {
+      const valid = result && result.width > 1 && result.height > 1;
+      if (valid) return result;
+      if (attempt < 8) {
+        return new Promise((res) => setTimeout(res, 60)).then(() => measureWithRetry(node, attempt + 1));
+      }
+      return result;
     });
 
   // Measure target
@@ -85,7 +117,7 @@ export default function OnboardingTour({
       clearTimeout(id);
       cancelled = true;
     };
-  }, [visible, index, steps]);
+  }, [visible, index, steps, layoutTick]);
 
   useEffect(() => {
     if (!visible) {
@@ -93,6 +125,15 @@ export default function OnboardingTour({
       setReady(false);
     }
   }, [visible]);
+
+  // Re-measure on orientation/size changes to keep spotlight aligned
+  useEffect(() => {
+    const sub = Dimensions.addEventListener('change', () => setLayoutTick((t) => t + 1));
+    return () => {
+      // RN >= 0.65: sub.remove exists; older returns function
+      try { sub?.remove?.(); } catch {}
+    };
+  }, []);
 
   const isLast = index === steps.length - 1;
 

@@ -7,7 +7,7 @@ import * as FileSystem from 'expo-file-system';
 import { Audio } from 'expo-av';
 import { Platform, NativeModules, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ensureReminderTTS, getReminders, getCalendarEvents, getReminder, setLocationPermission, scanNearbyForLocationReminders } from './api';
+import { API_BASE_URL, ensureReminderTTS, getReminders, getCalendarEvents, getReminder, setLocationPermission, scanNearbyForLocationReminders } from './api';
 
 // Configure how notifications are displayed when the app is foregrounded
 Notifications.setNotificationHandler({
@@ -29,6 +29,8 @@ let fgLocationWatch = null;
 const baseKey = 'scheduledReminderNotificationsMap';
 const keyForUser = (userId) => `${baseKey}:${userId || 'anonymous'}`;
 
+// (Reverted) No local feed storage; keep existing notification flow intact.
+
 async function getCurrentUserId() {
   try {
     const raw = await AsyncStorage.getItem('user');
@@ -39,15 +41,75 @@ async function getCurrentUserId() {
   }
 }
 
+// Minimal durable queue for posting delivered notifications to backend (Option A fallback)
+const postQueueBase = 'notificationPostQueue';
+const postQueueKeyForUser = (userId) => `${postQueueBase}:${userId || 'anonymous'}`;
+
+// Queue helpers for client fallback posting of delivered notifications to backend
+async function readPostQueue() {
+  try {
+    const userId = await getCurrentUserId();
+    const raw = await AsyncStorage.getItem(postQueueKeyForUser(userId));
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writePostQueue(list) {
+  try {
+    const userId = await getCurrentUserId();
+    await AsyncStorage.setItem(postQueueKeyForUser(userId), JSON.stringify(list || []));
+  } catch {}
+}
+
+async function enqueueDeliveredNotification(payload) {
+  try {
+    const list = await readPostQueue();
+    list.push({ ...payload, enqueuedAt: Date.now() });
+    await writePostQueue(list);
+  } catch {}
+}
+
+async function flushDeliveredQueue() {
+  try {
+    const token = await AsyncStorage.getItem('userToken');
+    if (!token) return false;
+    const list = await readPostQueue();
+    if (!Array.isArray(list) || list.length === 0) return true;
+    const base = (API_BASE_URL || '').replace(/\/$/, '');
+    const next = [];
+    for (const item of list) {
+      try {
+        await fetch(`${base}/notifications`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            type: item.type || 'reminder',
+            message: item.message || '',
+            reminderId: item.reminderId || null,
+            isRead: false,
+          }),
+        });
+      } catch {
+        next.push(item);
+      }
+    }
+    await writePostQueue(next);
+    return next.length === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function startForegroundLocationWatchIfNoBG() {
   try {
     if (fgLocationWatch) return;
-    fgLocationWatch = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.Balanced,
-        distanceInterval: 10,
-        timeInterval: 30 * 1000,
-      },
+    fgLocationWatch = await Location.watchPositionAsync({
+      accuracy: Location.Accuracy.Balanced,
+      distanceInterval: 10,
+      timeInterval: 30 * 1000,
+    },
       async (loc) => {
         try {
           if (!loc?.coords) return;
@@ -71,8 +133,16 @@ async function startForegroundLocationWatchIfNoBG() {
                 android: { channelId, pressAction: { id: 'default' }, importance: AndroidImportance.HIGH },
                 title: 'Nearby Reminder',
                 body: r.body || r.bodyFallback || `Reminder: You're near a place for ${r.title || 'your item'}.`,
-                data: { type: 'location_reminder', reminderId: r.reminderId, localAudioPath: localAudioPath || null },
+                data: {
+                  type: 'location_reminder',
+                  reminderId: r.reminderId,
+                  localAudioPath: localAudioPath || null,
+                  destLat: typeof r?.location?.lat === 'number' ? r.location.lat : (typeof r?.lat === 'number' ? r.lat : undefined),
+                  destLng: typeof r?.location?.lng === 'number' ? r.location.lng : (typeof r?.lng === 'number' ? r.lng : undefined),
+                  destName: r?.location?.name || r?.name || r?.title || undefined,
+                },
               });
+              // No local feed persistence
             } catch {}
             if (localAudioPath) { try { await playAudioFile(localAudioPath); } catch {} }
           }
@@ -246,8 +316,16 @@ function defineLocationScanTaskOnce() {
               android: { channelId, pressAction: { id: 'default' }, importance: AndroidImportance.HIGH },
               title: 'Nearby Reminder',
               body: r.body || r.bodyFallback || `Reminder: You're near a place for ${r.title || 'your item'}.`,
-              data: { type: 'location_reminder', reminderId: r.reminderId, localAudioPath: localAudioPath || null },
+              data: {
+                type: 'location_reminder',
+                reminderId: r.reminderId,
+                localAudioPath: localAudioPath || null,
+                destLat: typeof r?.location?.lat === 'number' ? r.location.lat : (typeof r?.lat === 'number' ? r.lat : undefined),
+                destLng: typeof r?.location?.lng === 'number' ? r.location.lng : (typeof r?.lng === 'number' ? r.lng : undefined),
+                destName: r?.location?.name || r?.name || r?.title || undefined,
+              },
             });
+            // No local feed persistence
           } catch {}
 
           // Attempt audio playback via JS as a fallback; native service may also play if integrated
@@ -378,7 +456,11 @@ export const configureNotifications = async () => {
     // Expo notifications (geofencing + legacy)
     Notifications.addNotificationReceivedListener(async (notification) => {
       try {
-        // No JS playback on delivery; native service handles audio
+        const data = notification?.request?.content?.data || {};
+        const body = notification?.request?.content?.body || '';
+        const mappedType = data?.type === 'location_reminder' ? 'location' : 'reminder';
+        await enqueueDeliveredNotification({ type: mappedType, message: body, reminderId: data?.reminderId || null });
+        await flushDeliveredQueue();
       } catch (e) {
         console.warn('Error handling foreground notification', e);
       }
@@ -386,7 +468,13 @@ export const configureNotifications = async () => {
 
     Notifications.addNotificationResponseReceivedListener(async (response) => {
       try {
-        // Suppress audio on tap to avoid duplicate playback
+        // Navigate to map if this was a location reminder (Expo path)
+        const data = response?.notification?.request?.content?.data || {};
+        if (data?.type === 'location_reminder' && data?.reminderId) {
+          try {
+            await AsyncStorage.setItem('pendingNav', JSON.stringify({ screen: 'MapDirections', params: { reminderId: data.reminderId } }));
+          } catch {}
+        }
       } catch (e) {
         console.warn('Error handling notification response', e);
       }
@@ -396,7 +484,36 @@ export const configureNotifications = async () => {
     try {
       notifee.onForegroundEvent(async ({ type, detail }) => {
         try {
-          // Do not play audio on DELIVERED or PRESS; native handles playback
+          if (type === EventType.DELIVERED) {
+            const n = detail?.notification;
+            const data = n?.data || {};
+            const body = n?.body || '';
+            let mappedType = 'reminder';
+            if (data?.type === 'location_reminder') mappedType = 'location';
+            // try refining via reminder fetch
+            try {
+              if (data?.reminderId) {
+                const r = await getReminder(data.reminderId);
+                const it = r?.data || r?.reminder || r;
+                if (it?.type) {
+                  const t = String(it.type).toLowerCase();
+                  if (t.includes('task')) mappedType = 'task';
+                  else if (t.includes('meeting')) mappedType = 'meeting';
+                  else if (t.includes('location')) mappedType = 'location';
+                }
+              }
+            } catch {}
+            await enqueueDeliveredNotification({ type: mappedType, message: body, reminderId: data?.reminderId || null });
+            await flushDeliveredQueue();
+          } else if (type === EventType.PRESS) {
+            const n = detail?.notification;
+            const data = n?.data || {};
+            if (data?.type === 'location_reminder' && data?.reminderId) {
+              try {
+                await AsyncStorage.setItem('pendingNav', JSON.stringify({ screen: 'MapDirections', params: { reminderId: data.reminderId } }));
+              } catch {}
+            }
+          }
         } catch (e) {
           console.warn('[notifee] fg event error', e?.message);
         }
@@ -405,7 +522,22 @@ export const configureNotifications = async () => {
       // Background handler must be registered at the root level; Notifee allows inline registration
       notifee.onBackgroundEvent(async ({ type, detail }) => {
         try {
-          // Suppress playback on PRESS/ACTION_PRESS to avoid duplicates
+          if (type === EventType.DELIVERED) {
+            const n = detail?.notification;
+            const data = n?.data || {};
+            const body = n?.body || '';
+            let mappedType = data?.type === 'location_reminder' ? 'location' : 'reminder';
+            await enqueueDeliveredNotification({ type: mappedType, message: body, reminderId: data?.reminderId || null });
+            await flushDeliveredQueue();
+          } else if (type === EventType.PRESS) {
+            const n = detail?.notification;
+            const data = n?.data || {};
+            if (data?.type === 'location_reminder' && data?.reminderId) {
+              try {
+                await AsyncStorage.setItem('pendingNav', JSON.stringify({ screen: 'MapDirections', params: { reminderId: data.reminderId } }));
+              } catch {}
+            }
+          }
         } catch (e) {
           // swallow
         }
@@ -415,6 +547,14 @@ export const configureNotifications = async () => {
     }
 
     listenersRegistered = true;
+    // Kick off a periodic flush to ensure delivery even if earlier attempts failed
+    try {
+      if (!global.__notifFlushTimer) {
+        global.__notifFlushTimer = setInterval(() => { flushDeliveredQueue(); }, 60000);
+      }
+      // initial flush on startup
+      flushDeliveredQueue();
+    } catch {}
   }
 };
 
@@ -557,7 +697,8 @@ export const scheduleReminderSpeechNotification = async ({
       // After AI line is available (or even if still null), ensure TTS once to align audio text with AI line
       try {
         const ensureRes = await ensureReminderTTS(reminderId, {});
-        effectiveTextHash = ensureRes?.tts?.textHash || effectiveTextHash;
+        // Use server-provided text hash if available to align audio cache with TTS
+        textHash = ensureRes?.tts?.textHash || textHash;
         // If server exposes aiNotificationLine on ensure response, prefer it
         if (!body && ensureRes?.aiNotificationLine) body = ensureRes.aiNotificationLine;
       } catch {}
@@ -571,7 +712,7 @@ export const scheduleReminderSpeechNotification = async ({
     }
 
     // Attempt to ensure audio cached before scheduling
-    const localAudioPath = await ensureReminderAudioCached({ reminderId, textHash: effectiveTextHash });
+    const localAudioPath = await ensureReminderAudioCached({ reminderId, textHash });
 
     // Replace existing scheduled notification for this reminder if requested
     if (replaceExisting && reminderId) {
@@ -591,6 +732,18 @@ export const scheduleReminderSpeechNotification = async ({
       timestamp: triggerMs,
       alarmManager: true,
     };
+    // Build Notifee data payload with string-only values
+    const notifeeData = {
+      type: 'reminder_speech',
+      startDateISO: String(startDateISO || ''),
+    };
+    if (reminderId !== undefined && reminderId !== null) {
+      notifeeData.reminderId = String(reminderId);
+    }
+    if (typeof localAudioPath === 'string' && localAudioPath.length > 0) {
+      notifeeData.localAudioPath = localAudioPath;
+    }
+
     const notifeeId = await notifee.createTriggerNotification({
       id: `${reminderId}-notify`,
       android: {
@@ -601,12 +754,7 @@ export const scheduleReminderSpeechNotification = async ({
       },
       title: 'Upcoming Reminder',
       body,
-      data: {
-        type: 'reminder_speech',
-        reminderId: reminderId || null,
-        startDateISO,
-        localAudioPath: localAudioPath || null,
-      },
+      data: notifeeData,
     }, trigger);
 
     // 2) Schedule the native alarm to auto-play audio in background/killed, scoped to user

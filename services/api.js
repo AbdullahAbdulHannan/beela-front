@@ -157,7 +157,8 @@ export const signup = async (userData) => {
     return response.data;
   } catch (error) {
     console.error('Signup error:', error.response?.data || error.message);
-    throw error.response?.data?.message || 'Signup failed';
+    const msg = error?.response?.data?.message || 'Signup failed';
+    throw new Error(msg);
   }
 };
 
@@ -218,7 +219,8 @@ export const login = async (credentials) => {
     }
   } catch (error) {
     console.error('Login error:', error.response?.data || error.message);
-    throw error.response?.data?.message || 'Login failed';
+    const msg = error?.response?.data?.message || 'Login failed';
+    throw new Error(msg);
   }
 };
 
@@ -276,6 +278,43 @@ export const getCurrentUser = async () => {
   } catch (error) {
     console.error('Error getting current user:', error);
     return null;
+  }
+};
+
+// Password & OTP APIs
+export const sendResetOtp = async (email) => {
+  try {
+    const response = await api.post('/auth/forgot-password', { email });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data?.message || 'Failed to send OTP';
+  }
+};
+
+export const verifyResetOtp = async ({ email, otp }) => {
+  try {
+    const response = await api.post('/auth/verify-otp', { email, otp });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data?.message || 'OTP verification failed';
+  }
+};
+
+export const resetPasswordWithOtp = async ({ email, newPassword }) => {
+  try {
+    const response = await api.post('/auth/reset-password', { email, newPassword });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data?.message || 'Password reset failed';
+  }
+};
+
+export const changePassword = async ({ currentPassword, newPassword }) => {
+  try {
+    const response = await api.put('/auth/change-password', { currentPassword, newPassword });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data?.message || 'Change password failed';
   }
 };
 
@@ -359,6 +398,22 @@ export const setLocationPermission = async (backgroundGranted) => {
 
 export const scanNearbyForLocationReminders = async ({ lat, lng, radius = 500 }) => {
   const response = await api.post('/location/scan', { lat, lng, radius });
+  return response.data;
+};
+
+// Notifications API
+export const getNotifications = async () => {
+  const response = await api.get('/notifications');
+  return response.data;
+};
+
+export const markNotificationRead = async (id) => {
+  const response = await api.post(`/notifications/${id}/mark-read`, {});
+  return response.data;
+};
+
+export const markAllNotificationsRead = async () => {
+  const response = await api.post('/notifications/mark-all-read', {});
   return response.data;
 };
 

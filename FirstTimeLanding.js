@@ -1,14 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
-import { View, StyleSheet, StatusBar, Image, ActivityIndicator, Text, Pressable } from "react-native";
+import { View, StyleSheet, StatusBar, Image, Text, Pressable } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { Audio } from "expo-av";
-// Removed Speech fallback to ensure we only use ElevenLabs as requested
+import * as Speech from "expo-speech";
 import { Buffer } from "buffer";
 import { useOnboarding } from "./components/OnboardingProvider";
+import { Asset } from "expo-asset";
 
-const ELEVENLABS_API_KEY = "sk_9445fc2abf247b5ce06e575ec327225ea0cf46a42017ba88";
+const ELEVENLABS_API_KEY = process.env.EXPO_PUBLIC_ELEVENLABS_API_KEY || "sk_9445fc2abf247b5ce06e575ec327225ea0cf46a42017ba88";
 const ELEVENLABS_VOICE_ID =
   process.env.EXPO_PUBLIC_ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
 
@@ -91,11 +92,19 @@ export default function FirstTimeLanding() {
 
     const play = async () => {
       try {
+        // Preload local GIFs to avoid any flicker/white gap
+        try {
+          await Promise.all([
+            Asset.fromModule(require("./assets/beela-ai.gif")).downloadAsync(),
+            Asset.fromModule(require("./assets/robot.gif")).downloadAsync(),
+          ]);
+        } catch {}
+
         const rawUser = await AsyncStorage.getItem("user");
         const user = rawUser ? JSON.parse(rawUser) : null;
         const fullName = user?.name || user?.fullname || "there";
         const firstName = String(fullName).trim().split(/\s+/)[0] || "there";
-
+ 
         const ttsUri = await getWelcomeTTS(firstName);
         if (mounted && ttsUri) {
           const { sound } = await Audio.Sound.createAsync(
@@ -119,17 +128,73 @@ export default function FirstTimeLanding() {
             }
           });
 
+          // Start playback and immediately show speaking animation to avoid white gap
           await sound.playAsync();
+          if (mounted) {
+            setIsSpeaking(true);
+            setIsLoading(false);
+          }
         } else {
-          // If ElevenLabs audio is unavailable, skip voice and show robot
+          // Fallback to OS TTS if ElevenLabs audio is unavailable
+          const rawUser = await AsyncStorage.getItem("user");
+          const user = rawUser ? JSON.parse(rawUser) : null;
+          const fullName = user?.name || user?.fullname || "there";
+          const firstName = String(fullName).trim().split(/\s+/)[0] || "there";
+          const text = `Hey ${firstName}, welcome to Beela AI!`;
+
+          // Pre-set speaking state to force GIF switch immediately
           setIsLoading(false);
-          setShowRobot(true);
+          setShowRobot(false);
+          setIsSpeaking(true);
+
+          Speech.speak(text, {
+            language: 'en-US',
+            pitch: 1.0,
+            rate: 0.9,
+            onStart: () => {
+              if (!mounted) return;
+              // already set above; keep for platforms that rely on callback
+              setIsSpeaking(true);
+              setIsLoading(false);
+            },
+            onDone: () => {
+              if (!mounted) return;
+              setIsSpeaking(false);
+              setShowRobot(true);
+            },
+            onStopped: () => {
+              if (!mounted) return;
+              setIsSpeaking(false);
+              setShowRobot(true);
+            }
+          });
         }
       } catch (err) {
         console.log("Audio error:", err);
-        // On error, do not fallback to Speech; end gracefully
-        setIsLoading(false);
-        setShowRobot(true);
+        // On error, fallback to OS TTS
+        try {
+          const rawUser = await AsyncStorage.getItem("user");
+          const user = rawUser ? JSON.parse(rawUser) : null;
+          const fullName = user?.name || user?.fullname || "there";
+          const firstName = String(fullName).trim().split(/\s+/)[0] || "there";
+          const text = `Hey ${firstName}, welcome to Beela AI!`;
+          // Pre-set speaking state to force GIF switch immediately
+          setIsLoading(false);
+          setShowRobot(false);
+          setIsSpeaking(true);
+
+          Speech.speak(text, {
+            language: 'en-US',
+            pitch: 1.0,
+            rate: 0.9,
+            onStart: () => { setIsSpeaking(true); setIsLoading(false); },
+            onDone: () => { setIsSpeaking(false); setShowRobot(true); },
+            onStopped: () => { setIsSpeaking(false); setShowRobot(true); }
+          });
+        } catch {
+          setIsLoading(false);
+          setShowRobot(true);
+        }
       }
     };
 
@@ -142,6 +207,7 @@ export default function FirstTimeLanding() {
 
     return () => {
       mounted = false;
+      try { Speech.stop(); } catch {}
       if (soundRef.current) {
         soundRef.current.stopAsync().catch(() => {});
         soundRef.current.unloadAsync().catch(() => {});
@@ -151,8 +217,6 @@ export default function FirstTimeLanding() {
   }, [navigation]);
 
   const startCrossScreenTour = async () => {
-    try { await AsyncStorage.setItem(onboardingKey, "true"); } catch {}
-    setTourCompleted(true);
     const steps = [
       // Dashboard highlights: Profile + Navbar only
       { navigateTo: { route: 'Dashboard' }, key: 'header-profile', title: 'Profile', text: 'Manage your profile and voice preferences from here.' },
@@ -169,7 +233,11 @@ export default function FirstTimeLanding() {
       // Calendar: sync button is the final step
       { navigateTo: { route: 'Calendar' }, key: 'cal-sync', title: 'Sync Calendar', text: 'Connect Google Calendar to import your events automatically.' },
     ];
+    // Start the tour immediately
     onboarding?.start?.(steps);
+    // Non-blocking persistence (if you still want to keep it)
+    try { AsyncStorage.setItem(onboardingKey, "true"); } catch {}
+    setTourCompleted(true);
   };
 
   return (
@@ -178,19 +246,20 @@ export default function FirstTimeLanding() {
 
       {isLoading && (
         <View style={styles.loaderContainer}>
-          <ActivityIndicator size="large" color="#007AFF" />
           <Text style={styles.loaderText}>Getting things ready...</Text>
+          <Image source={require('./assets/robot.gif')} style={styles.gif} resizeMode="contain"/>
         </View>
       )}
 
       {/* Single image element to prevent any flicker between states */}
       {!isLoading && (
         <Image
+          key={isSpeaking ? 'speaking' : (showRobot ? 'robot' : 'idle')}
           source={
             isSpeaking
               ? require("./assets/beela-ai.gif")
               : showRobot
-              ? require("./assets/robot.mp4")
+              ? require("./assets/robot.gif")
               : require("./assets/beela-ai.gif")
           }
           style={styles.gif}
@@ -198,7 +267,7 @@ export default function FirstTimeLanding() {
         />
       )}
 
-      {!tourCompleted && !isLoading && (
+      {!isSpeaking && !isLoading && (
         <View style={styles.ctaWrap}>
           <Pressable ref={ctaRef} onPress={startCrossScreenTour} style={({ pressed }) => [styles.nextBtn, pressed && { opacity: 0.85 }]}>
             <Text style={styles.nextBtnText}>Next</Text>
@@ -217,12 +286,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loaderContainer: {
+    flex: 1,
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "flex-start",
+    width: '100%',
   },
   loaderText: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: 30,
+    fontSize: 25,
     color: "#555",
   },
   gif: {
