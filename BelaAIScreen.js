@@ -32,26 +32,48 @@ const BelaAIScreen = () => {
   const [transcript, setTranscript] = useState('');
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const scrollViewRef = useRef();
+  const isMicPressedRef = useRef(false);
+  const speechRecognitionActiveRef = useRef(false);
 
   // Handle speech recognition events
   useSpeechRecognitionEvent('start', () => {
+    console.log('Speech recognition started');
+    speechRecognitionActiveRef.current = true;
     setIsListening(true);
     setError(null);
   });
 
   useSpeechRecognitionEvent('end', () => {
+    console.log('Speech recognition ended');
+    speechRecognitionActiveRef.current = false;
     setIsListening(false);
+    
+    // If mic is still pressed but recognition ended, restart it
+    if (isMicPressedRef.current) {
+      setTimeout(() => {
+        if (isMicPressedRef.current) {
+          console.log('Restarting recognition as mic is still pressed');
+          startListening();
+        }
+      }, 100);
+    }
   });
 
   useSpeechRecognitionEvent('result', (event) => {
     if (event.results && event.results[0]) {
-      setTranscript(event.results[0].transcript);
+      const newTranscript = event.results[0].transcript;
+      console.log('Transcript received:', newTranscript);
+      setTranscript(newTranscript);
     }
   });
 
   useSpeechRecognitionEvent('error', (event) => {
     console.error('Speech recognition error:', event.error, event.message);
-    setError(`Speech recognition error: ${event.message}`);
+    // Ignore "no-speech" errors as they're normal
+    if (event.error !== 'no-speech') {
+      setError(`Speech recognition error: ${event.message}`);
+    }
+    speechRecognitionActiveRef.current = false;
     setIsListening(false);
   });
 
@@ -61,25 +83,41 @@ const BelaAIScreen = () => {
       return;
     }
 
+    // Don't start if already listening
+    if (speechRecognitionActiveRef.current) {
+      console.log('Already listening, skipping start');
+      return;
+    }
+
     try {
-      // Pause global wake word detection while user is actively speaking
-      await wakeWordService.pauseListening(30000); // Pause for 30 seconds
+      console.log('Starting speech recognition...');
+      
+      // CRITICAL: Ensure wake word is stopped before starting user speech recognition
+      try {
+        await wakeWordService.stopListening();
+      } catch (err) {
+        console.warn('Could not stop wake word service:', err);
+      }
+      
+      // Mark that mic is pressed
+      isMicPressedRef.current = true;
       
       const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!result.granted) {
         setError('Microphone permission is required for voice input');
+        isMicPressedRef.current = false;
         return;
       }
 
       setTranscript('');
       setError(null);
       
-      // Start speech recognition
+      // Start speech recognition with continuous mode
       await ExpoSpeechRecognitionModule.start({
         lang: 'en-US',
         interimResults: true,
         maxAlternatives: 1,
-        continuous: false,
+        continuous: true, // Keep listening while mic is pressed
         requiresOnDeviceRecognition: false,
         addsPunctuation: true,
       });
@@ -88,32 +126,55 @@ const BelaAIScreen = () => {
       console.error('Failed to start speech recognition:', err);
       setError('Failed to start voice input. Please try again.');
       setIsListening(false);
+      speechRecognitionActiveRef.current = false;
+      isMicPressedRef.current = false;
     }
   };
 
   const stopListening = async () => {
     if (!isSpeechAvailable) {
       setIsListening(false);
+      isMicPressedRef.current = false;
       return;
     }
+
+    console.log('Stopping speech recognition...');
+    
+    // Mark that mic is released
+    isMicPressedRef.current = false;
 
     try {
       if (ExpoSpeechRecognitionModule && typeof ExpoSpeechRecognitionModule.stop === 'function') {
         await ExpoSpeechRecognitionModule.stop();
       }
       
+      speechRecognitionActiveRef.current = false;
+      
+      // Process the transcript if we have one
       if (transcript && transcript.trim()) {
-        const userMessage = { role: 'user', content: transcript };
+        console.log('Processing transcript:', transcript);
+        const finalTranscript = transcript.trim();
+        
+        // Clear transcript immediately before processing
+        setTranscript('');
+        
+        // Add user message to conversation
+        const userMessage = { role: 'user', content: finalTranscript };
         setConversation(prev => [...prev, userMessage]);
-        await processUserMessage(transcript);
+        
+        // Process the message asynchronously
+        processUserMessage(finalTranscript);
+      } else {
+        setTranscript('');
       }
       
-      setTranscript('');
     } catch (err) {
       console.error('Error during stop listening:', err);
       setError('Error processing voice input');
+      setTranscript('');
     } finally {
       setIsListening(false);
+      speechRecognitionActiveRef.current = false;
     }
   };
 
@@ -167,7 +228,8 @@ const BelaAIScreen = () => {
       }
 
       return await response.json();
-    } catch (error) {
+    }
+    catch (error) {
       console.error('Error scheduling meeting:', error);
       throw error;
     }
@@ -203,6 +265,8 @@ const BelaAIScreen = () => {
         throw new Error('Not authenticated. Please log in again.');
       }
 
+      console.log('Sending message to assistant:', message);
+
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: {
@@ -218,10 +282,25 @@ const BelaAIScreen = () => {
       }
 
       const result = await response.json();
+      console.log('Assistant response:', result);
 
+      // Add assistant's response to conversation
       if (result.response) {
         const assistantMessage = { role: 'assistant', content: result.response };
         setConversation(prev => [...prev, assistantMessage]);
+        
+        // Speak the response using text-to-speech (non-blocking)
+        Speech.speak(result.response, {
+          language: 'en-US',
+          pitch: 1.0,
+          rate: 0.9,
+          onDone: () => {
+            console.log('Finished speaking response');
+          },
+          onError: (error) => {
+            console.warn('Failed to speak response:', error);
+          }
+        });
       }
 
       // Check if the assistant detected a task or meeting
@@ -237,6 +316,13 @@ const BelaAIScreen = () => {
                 content: `Task "${createdTask.title}" has been created successfully!` 
               };
               setConversation(prev => [...prev, confirmationMessage]);
+              
+              // Speak confirmation (non-blocking)
+              Speech.speak(confirmationMessage.content, {
+                language: 'en-US',
+                pitch: 1.0,
+                rate: 0.9,
+              });
             } catch (error) {
               const errorMessage = { 
                 role: 'assistant', 
@@ -258,6 +344,13 @@ const BelaAIScreen = () => {
                 content: `Meeting "${createdMeeting.title}" has been scheduled for ${new Date(createdMeeting.startTime).toLocaleString()}!` 
               };
               setConversation(prev => [...prev, confirmationMessage]);
+              
+              // Speak confirmation (non-blocking)
+              Speech.speak(confirmationMessage.content, {
+                language: 'en-US',
+                pitch: 1.0,
+                rate: 0.9,
+              });
             } catch (error) {
               const errorMessage = { 
                 role: 'assistant', 
@@ -270,19 +363,41 @@ const BelaAIScreen = () => {
       }
     } catch (err) {
       console.error('Error processing message:', err);
-      setError(err.message || 'Error processing your message');
+      const errorMsg = err.message || 'Error processing your message';
+      setError(errorMsg);
+      
+      // Add error to conversation
+      const errorMessage = { 
+        role: 'assistant', 
+        content: `Sorry, I encountered an error: ${errorMsg}` 
+      };
+      setConversation(prev => [...prev, errorMessage]);
     } finally {
       setIsProcessing(false);
     }
   };
-
   // Clean up speech recognition on unmount
   useEffect(() => {
-    // When screen is mounted, pause wake word detection briefly
-    wakeWordService.pauseListening(5000);
+    // Stop any ongoing TTS when mounting
+    Speech.stop();
+    
+    // CRITICAL: Stop wake word detection when entering BelaAI screen
+    const stopWakeWord = async () => {
+      try {
+        await wakeWordService.stopListening();
+        console.log('🔇 Wake word detection STOPPED while in BelaAI screen');
+      } catch (err) {
+        console.warn('Error stopping wake word detection:', err);
+      }
+    };
+    
+    stopWakeWord();
     
     return () => {
       try {
+        // Stop TTS
+        Speech.stop();
+        
         // Safely stop any ongoing speech recognition
         if (ExpoSpeechRecognitionModule && 
             typeof ExpoSpeechRecognitionModule.stop === 'function') {
@@ -294,16 +409,19 @@ const BelaAIScreen = () => {
           }
         }
         
-        // Clean up any resources if needed
-        if (ExpoSpeechRecognitionModule && 
-            typeof ExpoSpeechRecognitionModule.destroy === 'function') {
-          const destroyPromise = ExpoSpeechRecognitionModule.destroy();
-          if (destroyPromise && typeof destroyPromise.catch === 'function') {
-            destroyPromise.catch(err => {
-              console.warn('Error destroying speech recognition:', err);
-            });
-          }
-        }
+        // Reset refs
+        isMicPressedRef.current = false;
+        speechRecognitionActiveRef.current = false;
+        
+        // CRITICAL: Restart wake word detection when leaving BelaAI screen
+        setTimeout(() => {
+          wakeWordService.startListening().then(() => {
+            console.log('🔊 Wake word detection RESTARTED after leaving BelaAI screen');
+          }).catch(err => {
+            console.warn('Error restarting wake word detection:', err);
+          });
+        }, 1000); // Wait 1 second to ensure speech recognition is fully stopped
+        
       } catch (err) {
         console.warn('Error during cleanup:', err);
       }
@@ -315,36 +433,61 @@ const BelaAIScreen = () => {
     typeof ExpoSpeechRecognitionModule.start === 'function' &&
     typeof ExpoSpeechRecognitionModule.stop === 'function';
 
+  // Pulse animation for mic button when listening
+  useEffect(() => {
+    if (isListening) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.2,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [isListening]);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Bela AI Assistant</Text>
+        <Text style={styles.headerTitle}></Text>
       </View>
 
-      <ScrollView
-        ref={scrollViewRef}
-        style={styles.conversationContainer}
-        contentContainerStyle={styles.conversationContent}
-        onContentSizeChange={() =>
-          scrollViewRef.current?.scrollToEnd({ animated: true })
-        }
-      >
-          <View style={styles.welcomeContainer}>
-            {/* <View style={styles.avatarContainer}>
-              <MaterialIcons name="android" size={80} color="#6200ee" />
-            </View> */}
-            {/* <Text style={styles.welcomeTitle}>Hi there! I'm Bela AI</Text>
-            <Text style={styles.welcomeSubtitle}>
-              Tap the mic and tell me what you need help with today. I can help
-              you create tasks, schedule meetings, or answer questions.
-            </Text> */}
-            <Image
-              source={require('./assets/robot.gif')}
-              style={{ width: 200, height: 200, marginBottom: 20 }}
-              resizeMode="contain"
-            />
-          </View>
-      </ScrollView>
+      <View style={styles.mainContent}>
+        <View style={styles.welcomeContainer}>
+          <Image
+            source={require('./assets/robot.gif')}
+            style={{ width: 450, height: 450, marginBottom: 30 }}
+            resizeMode="contain"
+          />
+          <Text style={styles.welcomeTitle}>Hi! I'm Bela AI</Text>
+          <Text style={styles.welcomeSubtitle}>
+            Hold the mic button and speak. I'll respond with voice.
+          </Text>
+          
+          {isProcessing && (
+            <View style={styles.processingContainer}>
+              <ActivityIndicator size="large" color="#6200ee" />
+              <Text style={styles.processingText}>Processing your request...</Text>
+            </View>
+          )}
+        </View>
+      </View>
+
+      {transcript && isListening && (
+        <View style={styles.transcriptContainer}>
+          <MaterialIcons name="mic" size={16} color="#2196f3" style={{ marginRight: 8 }} />
+          <Text style={styles.transcriptText}>{transcript}</Text>
+        </View>
+      )}
 
       {error && (
         <View style={styles.errorContainer}>
@@ -374,7 +517,11 @@ const BelaAIScreen = () => {
           </TouchableOpacity>
         </Animated.View>
         <Text style={styles.helperText}>
-          {isListening ? 'Listening...' : 'Hold to speak'}
+          {isListening 
+            ? 'Listening... (Release to send)' 
+            : isProcessing 
+              ? 'Processing...' 
+              : 'Hold to speak'}
         </Text>
       </View>
     </View>
@@ -382,7 +529,8 @@ const BelaAIScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f8f9fa' },
+  container: { flex: 1, backgroundColor: '#fff' },
+  
   header: {
     paddingTop: 50,
     paddingBottom: 16,
@@ -390,47 +538,67 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerTitle: { fontSize: 20, fontWeight: 'bold'},
-  conversationContainer: {
+  mainContent: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-  },
-  conversationContent: { paddingBottom: 20 },
-  welcomeContainer: { alignItems: 'center', justifyContent: 'center', padding: 20, marginTop: 40 },
-  avatarContainer: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: '#e3f2fd',
-    alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 20,
-    borderWidth: 3,
-    borderColor: '#bbdefb',
+    alignItems: 'center',
   },
-  welcomeTitle: { fontSize: 24, fontWeight: 'bold', marginBottom: 12, color: '#333', textAlign: 'center' },
-  welcomeSubtitle: { fontSize: 16, color: '#666', textAlign: 'center', lineHeight: 24 },
-  messageBubble: { maxWidth: '80%', padding: 12, borderRadius: 18, marginBottom: 12 },
-  userBubble: { alignSelf: 'flex-end', backgroundColor: '#6200ee', borderBottomRightRadius: 4 },
-  assistantBubble: { alignSelf: 'flex-start', backgroundColor: 'white', borderBottomLeftRadius: 4, borderWidth: 1, borderColor: '#e0e0e0' },
-  userText: { color: 'white', fontSize: 16 },
-  assistantText: { color: '#333', fontSize: 16 },
-  inputContainer: { padding: 20, alignItems: 'center', backgroundColor: 'white', borderTopWidth: 1, borderTopColor: '#eee' },
+  welcomeContainer: { 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    padding: 20,
+  },
+  welcomeTitle: { 
+    fontSize: 28, 
+    fontWeight: 'bold', 
+    marginBottom: 16, 
+    color: '#333', 
+    textAlign: 'center' 
+  },
+  welcomeSubtitle: { 
+    fontSize: 18, 
+    color: '#666', 
+    textAlign: 'center', 
+    lineHeight: 26,
+    marginBottom: 20,
+  },
+  processingContainer: {
+    marginTop: 30,
+    alignItems: 'center',
+  },
+  processingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: '#6200ee',
+    fontWeight: '500',
+  },
+  inputContainer: { 
+    padding: 20, 
+    alignItems: 'center', 
+    backgroundColor: 'white', 
+    borderTopWidth: 1, 
+    borderTopColor: '#eee' 
+  },
   micButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     backgroundColor: '#6200ee',
     alignItems: 'center',
     justifyContent: 'center',
-    elevation: 5,
+    elevation: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
   },
   micButtonActive: { backgroundColor: '#3700b3' },
-  helperText: { marginTop: 8, color: '#666', fontSize: 14 },
+  helperText: { 
+    marginTop: 12, 
+    color: '#666', 
+    fontSize: 15,
+    fontWeight: '500',
+  },
   errorContainer: {
     backgroundColor: '#ffebee',
     padding: 12,
@@ -440,8 +608,22 @@ const styles = StyleSheet.create({
     borderLeftColor: '#f44336',
   },
   errorText: { color: '#d32f2f', fontSize: 14 },
-  typingIndicator: { flexDirection: 'row', padding: 8 },
-  typingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#666' },
+  transcriptContainer: {
+    backgroundColor: '#e3f2fd',
+    padding: 12,
+    margin: 16,
+    marginTop: 0,
+    borderRadius: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#2196f3',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  transcriptText: { 
+    color: '#1565c0', 
+    fontSize: 15, 
+    fontStyle: 'italic',
+    flex: 1,
+  },
 });
-
 export default BelaAIScreen;

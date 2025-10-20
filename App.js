@@ -59,7 +59,6 @@ export default function App() {
   useEffect(() => {
     // Initialize wake word service for "Hey Bela" global navigation
     let wakeWordInitialized = false;
-    
     const initWakeWord = async () => {
       try {
         // Wait a bit to ensure navigation is ready
@@ -264,10 +263,7 @@ export default function App() {
             options={{ 
               headerShown: true,
               title: 'Bela AI Assistant',
-              headerStyle: {
-                backgroundColor: '#6200ee',
-              },
-              headerTintColor: '#fff',
+              // headerTintColor: '#fff',
             }} 
           />
         </Stack.Navigator>

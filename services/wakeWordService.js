@@ -352,34 +352,30 @@ class WakeWordService {
   /**
    * Stop listening for wake word
    */
-  async stopListening() {
-    if (!this.isListening) {
-      return;
-    }
+ async stopListening() {
+  // Always mark inactive first
+  this.isActive = false;
 
-    this.isActive = false;
-
-    if (this.retryTimeout) {
-      clearTimeout(this.retryTimeout);
-      this.retryTimeout = null;
-    }
-
-    if (ExpoSpeechRecognitionModule && 
-        typeof ExpoSpeechRecognitionModule.stop === 'function') {
-      try {
-        // Suppress audio before stopping
-        await this.configureAudioSession();
-        
-        await ExpoSpeechRecognitionModule.stop();
-        // Reduced logging
-        // console.log('Wake word detection stopped');
-      } catch (error) {
-        console.error('Error stopping wake word detection:', error);
-      }
-    }
-
-    this.isListening = false;
+  // Clear any pending restarts immediately
+  if (this.retryTimeout) {
+    clearTimeout(this.retryTimeout);
+    this.retryTimeout = null;
   }
+
+  // Even if not currently listening, ensure recognition is stopped
+  if (ExpoSpeechRecognitionModule && typeof ExpoSpeechRecognitionModule.stop === 'function') {
+    try {
+      await this.configureAudioSession();
+      await ExpoSpeechRecognitionModule.stop();
+      console.log('Wake word detection stopped');
+    } catch (error) {
+      console.error('Error stopping wake word detection:', error);
+    }
+  }
+
+  this.isListening = false;
+}
+
 
   /**
    * Pause listening for a specified duration

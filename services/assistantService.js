@@ -1,6 +1,6 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_BASE_URL } from '../config';
+import { API_BASE_URL } from './api';
 
 /**
  * Send a message to the Bela AI assistant
@@ -15,7 +15,7 @@ export const sendMessageToAssistant = async (message) => {
     }
 
     const response = await axios.post(
-      `${API_BASE_URL}/api/assistant/chat`,
+      `${API_BASE_URL}/assistant/chat`,
       { message },
       {
         headers: {
@@ -45,7 +45,7 @@ export const processVoiceCommand = async (command) => {
     }
 
     const response = await axios.post(
-      `${API_BASE_URL}/api/assistant/process-command`,
+      `${API_BASE_URL}/assistant/process-command`,
       { command },
       {
         headers: {
@@ -74,7 +74,7 @@ export const getConversationHistory = async () => {
     }
 
     const response = await axios.get(
-      `${API_BASE_URL}/api/assistant/conversation`,
+      `${API_BASE_URL}/assistant/conversation`,
       {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -101,7 +101,7 @@ export const clearConversationHistory = async () => {
     }
 
     await axios.delete(
-      `${API_BASE_URL}/api/assistant/conversation`,
+      `${API_BASE_URL}/assistant/conversation`,
       {
         headers: {
           'Authorization': `Bearer ${token}`,
